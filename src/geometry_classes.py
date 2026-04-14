@@ -30,8 +30,9 @@ import openmc
 
 
 import majorant_multipole as maj
-from performance_classes import PerformanceTracker, MajorantRecord, NeutronHistory
-from tally_classes import FluxTallyTLE, VerificationTally
+from src.performance_classes import PerformanceTracker, MajorantRecord, NeutronHistory
+from src.tally_classes import FluxTallyTLE, VerificationTally
+import src.group_xs as group_xs
 
 
 
@@ -96,6 +97,8 @@ class Geometry:
                  perf_tracker=True,
                  majorant_log=True,
                  verbose: bool = False):
+        
+        self._mode            = "analysis"  # "analysis" or "validation"
 
         self._materials      = []
         self._nuclides       = {}
@@ -105,6 +108,7 @@ class Geometry:
         self.verbose         = verbose
         self._maj_method     = "simple"
         self.xs_method       = "point"
+        self.access_method   = "fly"
         self.maj_mat         = None
         self.maj_tables      = {}
         self.reconr_grid     = None
@@ -163,6 +167,30 @@ class Geometry:
         self.distance_score = 0
         self.distance_sampling_score = 0
 
+    @property
+    def mode(self):
+        return self._mode
+    
+
+    def set_mode(self, value: str, filename: str = None):
+        if value not in ["analysis", "validation"]:
+            raise ValueError("Mode must be 'analysis' or 'validation'")
+        if value == "validation":
+            if filename is None:
+                raise ValueError("filename must be provided when setting validation mode")
+            self._mode = value
+            self.xs_method = "group"
+            self.maj_method = "simple"
+            self.df_group_xs = group_xs.get_group_xs(filename, verbose=self.verbose)
+        else:
+            self._mode = value
+            
+
+    
+    
+    
+
+    
     @property
     def majorant_log(self) -> List[MajorantRecord]:
         return self._majorant_log
@@ -267,11 +295,29 @@ class Geometry:
             wall_t0 = time.perf_counter()
             cpu_t0  = time.process_time()
 
-            if self.maj_method == "simple":
+            if self.mode == "validation":
                 actual_max_xs     = 0.0
                 limiting_mat_name = ""
+                if self.df_group_xs is None:
+                        raise ValueError("Group-wise XS data frame not set. Set df_group_xs before using 'validation' mode.")
+                for cell in self.df_group_xs['cell'].unique():
+                    cell_df = self.df_group_xs[self.df_group_xs['cell'] == cell]
+                    total = cell_df['scatter'].sum() + cell_df['absorption'].sum()
 
-                if self.xs_method == "point":
+                    if total > actual_max_xs:
+                        actual_max_xs     = total
+                        limiting_mat_name = f"Cell {cell}"
+
+                #settting 2 time higher to check if it is working properly
+                majorant_xs = 2.0 * actual_max_xs
+
+
+            else :
+                if self.maj_method == "simple":
+                    actual_max_xs     = 0.0
+                    limiting_mat_name = ""
+
+                    
                     for mat in self.materials:
                         xs_arr = mat._xs_evaluation(energy)
                         total  = float(xs_arr[0] + xs_arr[1])
@@ -280,46 +326,27 @@ class Geometry:
                             limiting_mat_name = mat.name
                     majorant_xs = 2.0 * actual_max_xs
 
-                elif self.xs_method == "group":
-                    if self.df_group_xs is None:
-                        raise ValueError("Group-wise XS data frame not set. Set df_group_xs before using 'group' method.")
-                    for cell in self.df_group_xs['cell'].unique():
-                        cell_df = self.df_group_xs[self.df_group_xs['cell'] == cell]
-                        total = cell_df['scatter'].sum() + cell_df['absorption'].sum()
 
-                        if total > actual_max_xs:
-                            actual_max_xs     = total
-                            limiting_mat_name = f"Cell {cell}"
 
-                    majorant_xs = 2.0 * actual_max_xs
+                elif self.maj_method == "maj_mat":
+                    if self.maj_mat is None or not self.maj_tables:
+                        raise ValueError("Majorant material or tables not defined. Set maj_method to 'maj_mat' and ensure tables are loaded.")
+                    else:
+                        majorant_xs = self.get_majorant_max_mat_xs(energy)
+                        actual_max_xs     = 0.0
+                        limiting_mat_name = ""
 
-            elif self.maj_method == "maj_mat":
-                if self.maj_mat is None or not self.maj_tables:
-                    raise ValueError("Majorant material or tables not defined. Set maj_method to 'maj_mat' and ensure tables are loaded.")
-                else:
-                    majorant_xs = self.get_majorant_max_mat_xs(energy)
-                    actual_max_xs     = 0.0
-                    limiting_mat_name = ""
-
-                    if self.xs_method == "point":
+                        
                         for mat in self.materials:
                             xs_arr = mat._xs_evaluation(energy)
                             total  = float(xs_arr[0] + xs_arr[1])
                             if total > actual_max_xs:
                                 actual_max_xs     = total
                                 limiting_mat_name = mat.name
-                    if self.xs_method == "group":
-                        if self.df_group_xs is None:
-                            raise ValueError("Group-wise XS data frame not set. Set df_group_xs before using 'group' method.")
-                        for cell in self.df_group_xs['cell'].unique():
-                            cell_df = self.df_group_xs[self.df_group_xs['cell'] == cell]
-                            total = cell_df['scatter'].sum() + cell_df['absorption'].sum()
-                            if total > actual_max_xs:
-                                actual_max_xs     = total
-                                limiting_mat_name = f"Cell {cell}"
+                       
 
-        else:
-            raise NotImplementedError("Only 'simple' and 'maj_mat' methods implemented")
+                else:
+                    raise NotImplementedError("Only 'simple' and 'maj_mat' methods implemented")
 
         if self.majorant_log_flag:
             record = MajorantRecord(
@@ -367,13 +394,44 @@ class Geometry:
 
         if mat is None:
             return False
+        
+        if self.mode == "analysis":
 
-        wall_t0 = time.perf_counter()
-        cpu_t0  = time.process_time()
+            wall_t0 = time.perf_counter()
+            cpu_t0  = time.process_time()
 
-        if self.xs_method == "point":
+            
             n.xs = mat._xs_evaluation(n.energy)
-        elif self.xs_method == "group":
+
+            wall_elapsed = time.perf_counter() - wall_t0
+            cpu_elapsed  = time.process_time()  - cpu_t0
+
+            self.perf.time_xs_eval     += wall_elapsed
+            self.perf.cpu_time_xs_eval += cpu_elapsed
+            self.perf.n_xs_evaluations += 1
+
+            local_xs        = float(n.xs[0] + n.xs[1])
+            acceptance_prob = local_xs / majorant_xs
+
+            if self.verbose:
+                print(
+                    f"  Material: {mat.name:12s} | "
+                    f"local_xs: {local_xs:.4f} | "
+                    f"majorant: {majorant_xs:.4f} | "
+                    f"ratio: {acceptance_prob:.4f}"
+                )
+
+            if np.random.uniform() < acceptance_prob:
+                n.material = mat
+                return True
+            return False
+        
+        
+        
+
+        elif self.mode == "validation":
+            wall_t0 = time.perf_counter()
+            cpu_t0  = time.process_time()
             if self.df_group_xs is None:
                 raise ValueError("Group-wise XS data frame not set. Set df_group_xs before using 'group' method.")
             if mat.name == "cell 1":
@@ -389,28 +447,28 @@ class Geometry:
             fission_xs = cell_df['fission'].sum() if 'fission' in cell_df.columns else 0.0
             n.xs = np.array([scatter_xs, absorption_xs, fission_xs])
 
-        wall_elapsed = time.perf_counter() - wall_t0
-        cpu_elapsed  = time.process_time()  - cpu_t0
+            wall_elapsed = time.perf_counter() - wall_t0
+            cpu_elapsed  = time.process_time()  - cpu_t0
 
-        self.perf.time_xs_eval     += wall_elapsed
-        self.perf.cpu_time_xs_eval += cpu_elapsed
-        self.perf.n_xs_evaluations += 1
+            self.perf.time_xs_eval     += wall_elapsed
+            self.perf.cpu_time_xs_eval += cpu_elapsed
+            self.perf.n_xs_evaluations += 1
 
-        local_xs        = float(n.xs[0] + n.xs[1])
-        acceptance_prob = local_xs / majorant_xs
+            local_xs        = float(n.xs[0] + n.xs[1])
+            acceptance_prob = local_xs / majorant_xs
 
-        if self.verbose:
-            print(
-                f"  Material: {mat.name:12s} | "
-                f"local_xs: {local_xs:.4f} | "
-                f"majorant: {majorant_xs:.4f} | "
-                f"ratio: {acceptance_prob:.4f}"
-            )
+            if self.verbose:
+                print(
+                    f"  Material: {mat.name:12s} | "
+                    f"local_xs: {local_xs:.4f} | "
+                    f"majorant: {majorant_xs:.4f} | "
+                    f"ratio: {acceptance_prob:.4f}"
+                )
 
-        if np.random.uniform() < acceptance_prob:
-            n.material = mat
-            return True
-        return False
+            if np.random.uniform() < acceptance_prob:
+                n.material = mat
+                return True
+            return False
 
     # ------------------------------------------------------------------
     def _sample_collision(self, n: Neutron) -> str:
@@ -421,7 +479,7 @@ class Geometry:
 
     # ------------------------------------------------------------------
     def _scattering_neutron(self, n: Neutron):
-        if self.xs_method == "point":
+        if self.mode == "analysis":
             contributions = np.array([
                 density * nuclide_obj(n.energy, n.material.T)[0]
                 for nuclide_obj, density in n.material.nuclides
@@ -430,9 +488,9 @@ class Geometry:
             idx   = np.random.choice(len(n.material.nuclides), p=probs)
             A     = n.material.nuclides[idx][0].sqrtAWR ** 2
 
-        elif self.xs_method == "group":
+        elif self.mode == "validation":
             if len(n.material.nuclides) != 1:
-                raise ValueError("Group-wise scattering only implemented for materials with a single nuclide.")
+                raise ValueError("Group-wise scattering/validation mode only implemented for materials with a single nuclide.")
             nuclide_obj = n.material.nuclides[0][0]
             A = nuclide_obj.sqrtAWR ** 2
 
@@ -617,9 +675,9 @@ class Geometry:
                 local_xs   = 0.0
                 mat_name   = ""
                 if mat_at_pos is not None:
-                    if self.xs_method == "point":
+                    if self.mode == "analysis":
                         xs_arr   = mat_at_pos._xs_evaluation(n.energy)
-                    elif self.xs_method == "group":
+                    elif self.mode == "validation":
                         if mat_at_pos.name == "cell 1":
                             xs_scatter    = self.df_group_xs[(self.df_group_xs['cell'] == 15)]['scatter'].sum()
                             xs_absorption = self.df_group_xs[(self.df_group_xs['cell'] == 15)]['absorption'].sum()
