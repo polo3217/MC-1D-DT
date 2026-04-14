@@ -191,7 +191,7 @@ class Geometry:
     def materials(self):
         return self._materials
 
-    def add_material(self, mat: material):
+    def add_material(self, mat: Material):
         if any(m.name == mat.name for m in self._materials):
             raise ValueError(f"Material with name '{mat.name}' already exists.")
         self._materials.append(mat)
@@ -347,19 +347,19 @@ class Geometry:
         return -np.log(np.random.uniform()) / majorant_xs
 
     # ------------------------------------------------------------------
-    def _move_neutron(self, n: neutron, distance: float):
+    def _move_neutron(self, n: Neutron, distance: float):
         for i in range(3):
             n.position[i] += n.direction[i] * distance
 
     # ------------------------------------------------------------------
-    def _get_material_at(self, x: float) -> Optional[material]:
+    def _get_material_at(self, x: float) -> Optional[Material]:
         for i in range(len(self.boundaries) - 1):
             if self.boundaries[i] <= x < self.boundaries[i + 1]:
                 return self.material_array[i]
         return None
 
     # ------------------------------------------------------------------
-    def _evaluate_acceptance(self, n: neutron, majorant_xs: float) -> bool:
+    def _evaluate_acceptance(self, n: Neutron, majorant_xs: float) -> bool:
         if majorant_xs is None:
             raise ValueError("Majorant cross section is not defined")
 
@@ -413,14 +413,14 @@ class Geometry:
         return False
 
     # ------------------------------------------------------------------
-    def _sample_collision(self, n: neutron) -> str:
+    def _sample_collision(self, n: Neutron) -> str:
         if n.energy < 10.0:
             return "absorption"
         scatter_prob = n.xs[0] / (n.xs[0] + n.xs[1])
         return "scatter" if np.random.uniform() < scatter_prob else "absorption"
 
     # ------------------------------------------------------------------
-    def _scattering_neutron(self, n: neutron):
+    def _scattering_neutron(self, n: Neutron):
         if self.xs_method == "point":
             contributions = np.array([
                 density * nuclide_obj(n.energy, n.material.T)[0]
@@ -466,7 +466,7 @@ class Geometry:
         n.direction[2] = new_w / norm
 
     # ------------------------------------------------------------------
-    def _run_neutron(self, n: neutron, neutron_id: int = 0,
+    def _run_neutron(self, n: Neutron, neutron_id: int = 0,
                     track_neutron: bool = False):
 
         hist = NeutronHistory(
@@ -667,7 +667,7 @@ class Geometry:
 
         tracks = []
         for nid, n in enumerate(src.neutrons):
-            active_neutron = neutron(energy=n.energy, position=n.position, direction=n.direction)
+            active_neutron = Neutron(energy=n.energy, position=n.position, direction=n.direction)
             result = self._run_neutron(active_neutron, neutron_id=nid,
                                        track_neutron=track_neutron)
             if track_neutron:
