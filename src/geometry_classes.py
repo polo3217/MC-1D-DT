@@ -15,6 +15,7 @@ parallelism efficiency = CPU time / wall time.
 """
 import sys
 import os
+
 sys.path.append('/home/paule/open_mc_projects/windowed_multipole/02_working_notebook_vectfit')
 
 from dataclasses import dataclass, field
@@ -33,7 +34,16 @@ import majorant_multipole as maj
 from src.performance_classes import PerformanceTracker, MajorantRecord, NeutronHistory
 from src.tally_classes import FluxTallyTLE, VerificationTally
 import src.group_xs as group_xs
+import src.vectfit as vf
+import src.wmp_evaluation as wmp
 
+global  valid_nuclides_name 
+global  valid_nuclides_list 
+global  xs_dir
+
+valid_nuclides_name = [ "U238", "U235", "Pu239","Pu240", "Cnat", "O16", "H1", "Fe56", "Xe135", "Na23" ]    
+valid_nuclides_list = [ '092238', '092235', '094239', '094240', '006000',  '008016', '001001','026056','054135', '011023']
+xs_dir = '/home/paule/open_mc_projects/xs_lib/endfb-vii.1-hdf5/wmp'
 
 
 
@@ -55,8 +65,25 @@ class Neutron:
 class Material:
     def __init__(self, name, nuclides=None, T=293.6):
         self.name     = name
+
+        #nuclides are defined by name and than the multipole library is loaded
         self.nuclides = nuclides if nuclides is not None else []
-        self.nuclides = [(n[0], n[1] * 1e-24) for n in self.nuclides]
+        for i, pair in enumerate(self.nuclides):
+            print(pair)
+            nuclide_name = pair[0]
+            nuclide_density = pair[1]
+            
+                
+            if nuclide_name not in valid_nuclides_name:
+                raise ValueError(f"Nuclide '{nuclide_name}' not in valid nuclides list.")
+            
+            index = valid_nuclides_name.index(nuclide_name)
+            nuclide_id = valid_nuclides_list[index]                         
+            file_h5 = str(nuclide_id) + '.h5'
+            
+            nuclide_obj = openmc.data.WindowedMultipole.from_hdf5(os.path.join(xs_dir, file_h5))
+            self.nuclides[i] = (nuclide_obj, nuclide_density*1.0e-24)
+    
         self.T        = T
         self.total_density = float(np.sum([n[1] for n in self.nuclides]))
         self.xs       = None
@@ -98,7 +125,21 @@ class Geometry:
                  majorant_log=True,
                  verbose: bool = False):
         
+       
+        
+        
         self._mode            = "analysis"  # "analysis" or "validation"
+        self._maj_xs_method       = "discrete"      # "vectfit", "sqrtE_T" or "discrete" or "point"
+        self._maj_mat_method     = "simple"     # "simple" or "maj_mat"
+        self.access_method   = "fly"        # "fly" or "reconr"
+
+
+
+        #specific for discrete majorant_xs_method
+        self.T_array        = None
+
+
+
 
         self._materials      = []
         self._nuclides       = {}
@@ -106,11 +147,10 @@ class Geometry:
         self.material_array  = []
         self.source          = None
         self.verbose         = verbose
-        self._maj_method     = "simple"
-        self.xs_method       = "point"
-        self.access_method   = "fly"
+        
+        # specific for the maj_mat_method 
         self.maj_mat         = None
-        self.maj_tables      = {}
+        self.xs_maj_tables   = {}
         self.reconr_grid     = None
         self._df_group_xs    = None
 
@@ -167,6 +207,8 @@ class Geometry:
         self.distance_score = 0
         self.distance_sampling_score = 0
 
+
+    
     @property
     def mode(self):
         return self._mode
@@ -179,11 +221,71 @@ class Geometry:
             if filename is None:
                 raise ValueError("filename must be provided when setting validation mode")
             self._mode = value
-            self.xs_method = "group"
+            self.set_maj_xs_method("group")
             self.maj_method = "simple"
             self.df_group_xs = group_xs.get_group_xs(filename, verbose=self.verbose)
         else:
             self._mode = value
+
+    @property 
+    def maj_xs_method(self):
+        return self._maj_xs_method
+    
+    
+    def set_maj_xs_method(self, method: str = "discrete", verbose: bool = False,
+                          
+                          T_array: Optional[np.ndarray] = None,
+
+                          xs_maj_file_dir : Optional[str] = None
+
+                          ):
+    
+        if method not in ["discrete", "vectfit", "sqrtE_T", "group"]:
+            raise ValueError("maj_xs_method must be 'discrete', 'vectfit', 'sqrtE_T' or 'group'")
+        self._maj_xs_method = method
+
+        if method == "vectfit":
+            if xs_maj_file_dir is None:
+                raise ValueError("file_dir must be provided when setting maj_xs_method to 'vectfit'")
+            self.xs_maj_tables = vf.xs_majorant_tables(file_dir=xs_maj_file_dir, verbose=verbose)
+            # need to load the nuclides which are in the tables
+
+        if method == "discrete":
+            if T_array is None:
+                raise ValueError("T_array must be provided when setting maj_xs_method to 'discrete'")
+            self.T_array = T_array
+
+        if method == "sqrtE_T":
+            raise NotImplementedError("sqrtE_T majorant method not implemented yet")
+        
+    @property
+    def maj_mat_method(self):
+        return self._maj_mat_method
+
+    @maj_mat_method.setter
+    def maj_mat_method(self, value):
+        self._maj_mat_method = value
+        if value == "maj_mat":
+            self.maj_mat    = self.build_majorant_all_material(verbose_maj=True)
+        
+    @property
+    def access_method(self):
+        return self._access_method
+    
+    @access_method.setter
+    def access_method(self, value):
+        if value not in ["fly", "reconr"]:
+            raise ValueError("access_method must be 'fly' or 'reconr'")
+        self._access_method = value
+
+        if value =="reconr":
+            raise NotImplementedError("reconr access method not implemented yet")
+
+
+    
+
+
+
             
 
     
@@ -196,16 +298,7 @@ class Geometry:
         return self._majorant_log
 
     # ------------------------------------------------------------------
-    @property
-    def maj_method(self):
-        return self._maj_method
 
-    @maj_method.setter
-    def maj_method(self, value):
-        self._maj_method = value
-        if value == "maj_mat":
-            self.maj_mat    = self.build_majorant_all_material(verbose_maj=True)
-            self.maj_tables = self.load_majorant_tables()
 
     @property
     def df_group_xs(self):
@@ -227,6 +320,8 @@ class Geometry:
             print(nuclide[0].name)
             if nuclide[0].name not in self._nuclides:
                 self._nuclides[nuclide[0].name] = nuclide
+            
+
 
     @property
     def nuclides(self):
@@ -235,45 +330,30 @@ class Geometry:
     # ------------------------------------------------------------------
     #  Majorant helper methods
 
-    def build_majorant_all_material(self, verbose_maj: bool = False) -> dict:
-        maj_mat = {}
+    def build_majorant_all_material(self, verbose_maj: bool = False) -> Material:
+        mat_maj = Material(name="maj_mat", nuclides=[])
+        nuclides = {}
         for mat in self.materials:
             for nuclide_obj, density in mat.nuclides:
                 if verbose_maj:
                     print(f"Material: {mat.name:12s} | Nuclide: {nuclide_obj.name:10s} | Density: {density*1e24:.4e} atoms/cm³")
-                if nuclide_obj.name not in maj_mat:
-                    maj_mat[nuclide_obj.name] = density
+                if nuclide_obj.name not in nuclides:
+                    nuclides[nuclide_obj.name] = density
                 else:
-                    maj_mat[nuclide_obj.name] = max(maj_mat[nuclide_obj.name], density)
+                    nuclides[nuclide_obj.name] = max(nuclides[nuclide_obj.name], density)
         if verbose_maj:
             print("Majorant material composition:")
-            for nuclide_name, density in maj_mat.items():
+            for nuclide_name, density in nuclides.items():
                 print(f"  {nuclide_name:10s} : {density*1e24:.4e} atoms/cm³")
-        return maj_mat
+        for nuclide_name, density in nuclides.items():
+            mat_maj.nuclides.append((nuclide_name, density))
+        
+        
+        return mat_maj
 
-    def load_majorant_tables(self) -> dict:
-        tables = {}
-        print(self.maj_mat.keys())
-        for nuclide_name in self.maj_mat.keys():
-            print(f"Loading table for nuclide: {nuclide_name}")
-            nuclide_obj = self.nuclides[nuclide_name]
-            path = (f"/home/paule/open_mc_projects/windowed_multipole/"
-                    f"02_working_notebook_vectfit/outputs/{nuclide_name}/"
-                    f"optimized_poles_residues.csv")
-            
-            table = pd.read_csv(path)
-            table["Optimized Pole"]    = table["Optimized Pole"].str.strip("()").astype(complex)
-            table["Optimized Residue"] = table["Optimized Residue"].str.strip("()").astype(complex)
-            tables[nuclide_name] = table
-        return tables
 
-    def get_majorant_max_mat_xs(self, energy: float):
-        maj_xs = 0.0
-        for nuclide_name, density in self.maj_mat.items():
-            nuclide_obj = self.nuclides[nuclide_name][0]
-            maj_xs += density * maj.evaluate_sig_maj(nuclide_obj, energy,
-                                                     self.maj_tables[nuclide_name])
-        return maj_xs
+
+
 
     # ------------------------------------------------------------------
     def attach_flux_tally(self, energy_bins: List[float],
@@ -289,82 +369,120 @@ class Geometry:
         )
 
     # ------------------------------------------------------------------
+
+
+    def calculate_nuclide_majorant_xs(self, energy: float, nuclide)-> float:
+
+        if self.maj_xs_method == "vectfit":
+            if self.xs_maj_tables is None:
+                raise ValueError("Majorant tables not loaded. Set maj_xs_method to 'vectfit' and ensure tables are loaded.")
+            if self.xs_maj_tables[nuclide.name] is None:
+                raise ValueError(f"Majorant table for nuclide {nuclide.name} not found. Ensure tables are loaded and contain the nuclide.")
+            
+            maj_table = self.xs_maj_tables[nuclide.name]
+            return maj.evaluate_sig_maj(nuclide, energy, maj_table)
+        
+        elif self.maj_xs_method == "sqrtE_T":
+            raise NotImplementedError("sqrtE_T majorant method not implemented yet")
+        
+        elif self.maj_xs_method == "discrete":
+            if self.T_array is None:
+                raise ValueError("T_array must be provided for discrete majorant method")
+            return wmp.wmp_majorant(energy, T_array=self.T_array, nuclide=nuclide)
+
+            
+        return
+    
+    def caculate_mat_majorant_xs(self, energy: float) -> float:
+        
+
+        ## Case maj_mat = simply caculate a majorant material and evaluate it.
+        if self.maj_mat_method == "maj_mat":
+            assert self.maj_mat.name == "maj_mat", "maj_mat method requires a majorant material to be defined and set as maj_mat"
+            majorant_xs = 0.0
+            
+            for nuclide_obj, density in self.maj_mat.nuclides:
+                
+                nuclide_obj = self._nuclides[nuclide_obj][0]
+                maj_xs_nuclide = self.calculate_nuclide_majorant_xs(energy, nuclide_obj)
+                majorant_xs += density * maj_xs_nuclide
+
+            
+        
+
+        ## Case simple : iterate through each material and select the maximum majorant xs
+        elif self.maj_mat_method == "simple":
+            majorant_xs = 0.0
+            for mat in self.materials:
+                mat_majorant_xs = 0.0
+                for nuclide_obj, density in mat.nuclides:
+                    maj_xs_nuclide = self.calculate_nuclide_majorant_xs(energy, nuclide_obj)
+                    mat_majorant_xs += density * maj_xs_nuclide
+                if mat_majorant_xs > majorant_xs:
+                    majorant_xs = mat_majorant_xs
+            
+        
+        
+        return majorant_xs
+    
+    def access_majorant_xs(self, energy: float) -> float:
+        if self.access_method == "fly":
+            
+            return self.caculate_mat_majorant_xs(energy)
+        
+        elif self.access_method == "reconr":
+            raise NotImplementedError("reconr access method not implemented yet")
+        
+
+        return
+
     def get_majorant_xs(self, energy: float) -> float:
 
         if self.perf_tracker_flag:
             wall_t0 = time.perf_counter()
             cpu_t0  = time.process_time()
 
-            if self.mode == "validation":
+        if self.mode == "validation":
+            actual_max_xs     = 0.0
+            limiting_mat_name = ""
+            if self.df_group_xs is None:
+                raise ValueError("...")
+            for cell in self.df_group_xs['cell'].unique():
+                cell_df = self.df_group_xs[self.df_group_xs['cell'] == cell]
+                total = cell_df['scatter'].sum() + cell_df['absorption'].sum()
+                if total > actual_max_xs:
+                    actual_max_xs     = total
+                    limiting_mat_name = f"Cell {cell}"
+            majorant_xs = 2.0 * actual_max_xs
+
+        else:
+            majorant_xs = self.access_majorant_xs(energy)
+            if self.majorant_log_flag:
                 actual_max_xs     = 0.0
                 limiting_mat_name = ""
-                if self.df_group_xs is None:
-                        raise ValueError("Group-wise XS data frame not set. Set df_group_xs before using 'validation' mode.")
-                for cell in self.df_group_xs['cell'].unique():
-                    cell_df = self.df_group_xs[self.df_group_xs['cell'] == cell]
-                    total = cell_df['scatter'].sum() + cell_df['absorption'].sum()
-
+                for mat in self.materials:
+                    xs_arr = mat._xs_evaluation(energy)
+                    total  = float(xs_arr[0] + xs_arr[1])
                     if total > actual_max_xs:
                         actual_max_xs     = total
-                        limiting_mat_name = f"Cell {cell}"
+                        limiting_mat_name = mat.name
 
-                #settting 2 time higher to check if it is working properly
-                majorant_xs = 2.0 * actual_max_xs
-
-
-            else :
-                if self.maj_method == "simple":
-                    actual_max_xs     = 0.0
-                    limiting_mat_name = ""
-
-                    
-                    for mat in self.materials:
-                        xs_arr = mat._xs_evaluation(energy)
-                        total  = float(xs_arr[0] + xs_arr[1])
-                        if total > actual_max_xs:
-                            actual_max_xs     = total
-                            limiting_mat_name = mat.name
-                    majorant_xs = 2.0 * actual_max_xs
-
-
-
-                elif self.maj_method == "maj_mat":
-                    if self.maj_mat is None or not self.maj_tables:
-                        raise ValueError("Majorant material or tables not defined. Set maj_method to 'maj_mat' and ensure tables are loaded.")
-                    else:
-                        majorant_xs = self.get_majorant_max_mat_xs(energy)
-                        actual_max_xs     = 0.0
-                        limiting_mat_name = ""
-
-                        
-                        for mat in self.materials:
-                            xs_arr = mat._xs_evaluation(energy)
-                            total  = float(xs_arr[0] + xs_arr[1])
-                            if total > actual_max_xs:
-                                actual_max_xs     = total
-                                limiting_mat_name = mat.name
-                       
-
-                else:
-                    raise NotImplementedError("Only 'simple' and 'maj_mat' methods implemented")
-
+        # shared bookkeeping for both modes
         if self.majorant_log_flag:
-            record = MajorantRecord(
+            self._majorant_log.append(MajorantRecord(
                 energy=energy,
                 value=majorant_xs,
                 limiting_material=limiting_mat_name,
                 actual_max_xs=actual_max_xs,
-            )
-            self._majorant_log.append(record)
+            ))
 
         if self.perf_tracker_flag:
             wall_elapsed = time.perf_counter() - wall_t0
             cpu_elapsed  = time.process_time()  - cpu_t0
-
             self.perf.n_majorant_updates  += 1
             self.perf.time_majorant       += wall_elapsed
             self.perf.cpu_time_majorant   += cpu_elapsed
-
+        
         return majorant_xs
 
     # ------------------------------------------------------------------
