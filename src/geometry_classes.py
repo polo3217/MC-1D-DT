@@ -36,6 +36,7 @@ from src.tally_classes import FluxTallyTLE, VerificationTally
 import src.group_xs as group_xs
 import src.vectfit as vf
 import src.wmp_evaluation as wmp
+import src.reconr as reconr
 
 global  valid_nuclides_name 
 global  valid_nuclides_list 
@@ -128,10 +129,10 @@ class Geometry:
        
         
         
-        self._mode            = "analysis"  # "analysis" or "validation"
+        self._mode                = "analysis"  # "analysis" or "validation"
         self._maj_xs_method       = "discrete"      # "vectfit", "sqrtE_T" or "discrete" or "point"
-        self._maj_mat_method     = "simple"     # "simple" or "maj_mat"
-        self.access_method   = "fly"        # "fly" or "reconr"
+        self._maj_mat_method      = "simple"     # "simple" or "maj_mat"
+        self._access_method        = "fly"        # "fly" or "reconr"
 
 
 
@@ -149,9 +150,10 @@ class Geometry:
         self.verbose         = verbose
         
         # specific for the maj_mat_method 
-        self.maj_mat         = None
+        self.maj_mat  : Material       = None
         self.xs_maj_tables   = {}
-        self.reconr_grid     = None
+        self.reconr_e_grid     = None
+        self.reconr_maj_xs_grid    = None
         self._df_group_xs    = None
 
         # Legacy score accumulators
@@ -272,14 +274,21 @@ class Geometry:
     def access_method(self):
         return self._access_method
     
-    @access_method.setter
-    def access_method(self, value):
+    
+    def set_access_method(self, value, err_lim = 0.001, err_max = 0.01, err_int = None, last_window = None, last_energy = None):
         if value not in ["fly", "reconr"]:
             raise ValueError("access_method must be 'fly' or 'reconr'")
         self._access_method = value
 
-        if value =="reconr":
-            raise NotImplementedError("reconr access method not implemented yet")
+        if value == "reconr":
+            print("Building majorant XS grid for RECONR access method with settings:")
+            print(f"xs_methodod: {self.maj_xs_method}")
+            print(f"maj_mat_method: {self.maj_mat_method}")
+
+            print(f"materials: {[mat.name for mat in self.materials]}")
+            self.reconr_e_grid, self.reconr_maj_xs_grid = reconr.build_majorant_xs_grid(self, err_lim, err_max, err_int, last_window, last_energy)
+            
+
 
 
     
@@ -331,24 +340,35 @@ class Geometry:
     #  Majorant helper methods
 
     def build_majorant_all_material(self, verbose_maj: bool = False) -> Material:
-        mat_maj = Material(name="maj_mat", nuclides=[])
-        nuclides = {}
+        
+        # collect max density per nuclide across all materials
+        nuclides = {}   # {name: (nuclide_obj, max_density)}
         for mat in self.materials:
             for nuclide_obj, density in mat.nuclides:
                 if verbose_maj:
-                    print(f"Material: {mat.name:12s} | Nuclide: {nuclide_obj.name:10s} | Density: {density*1e24:.4e} atoms/cm³")
+                    print(f"Material: {mat.name:12s} | "
+                        f"Nuclide: {nuclide_obj.name:10s} | "
+                        f"Density: {density*1e24:.4e} atoms/cm³")
                 if nuclide_obj.name not in nuclides:
-                    nuclides[nuclide_obj.name] = density
+                    nuclides[nuclide_obj.name] = (nuclide_obj, density)
                 else:
-                    nuclides[nuclide_obj.name] = max(nuclides[nuclide_obj.name], density)
+                    _, existing_density = nuclides[nuclide_obj.name]
+                    nuclides[nuclide_obj.name] = (nuclide_obj,
+                                                max(existing_density, density))
+
         if verbose_maj:
             print("Majorant material composition:")
-            for nuclide_name, density in nuclides.items():
-                print(f"  {nuclide_name:10s} : {density*1e24:.4e} atoms/cm³")
-        for nuclide_name, density in nuclides.items():
-            mat_maj.nuclides.append((nuclide_name, density))
-        
-        
+            for name, (_, density) in nuclides.items():
+                print(f"  {name:10s} : {density*1e24:.4e} atoms/cm³")
+
+        # build the Material object bypassing __init__ loading logic
+        mat_maj       = object.__new__(Material)
+        mat_maj.name  = "maj_mat"
+        mat_maj.xs    = None
+        mat_maj.nuclides = [(nuclide_obj, density)
+                            for nuclide_obj, density in nuclides.values()]
+        mat_maj.total_density = float(sum(d for _, d in mat_maj.nuclides))
+
         return mat_maj
 
 
@@ -402,8 +422,6 @@ class Geometry:
             majorant_xs = 0.0
             
             for nuclide_obj, density in self.maj_mat.nuclides:
-                
-                nuclide_obj = self._nuclides[nuclide_obj][0]
                 maj_xs_nuclide = self.calculate_nuclide_majorant_xs(energy, nuclide_obj)
                 majorant_xs += density * maj_xs_nuclide
 
@@ -427,11 +445,21 @@ class Geometry:
     
     def access_majorant_xs(self, energy: float) -> float:
         if self.access_method == "fly":
-            
             return self.caculate_mat_majorant_xs(energy)
         
         elif self.access_method == "reconr":
-            raise NotImplementedError("reconr access method not implemented yet")
+            i = np.searchsorted(self.reconr_e_grid, energy)
+
+            if i == 0:
+                return self.reconr_maj_xs_grid[0]
+            elif i == len(self.reconr_e_grid):
+                return self.reconr_maj_xs_grid[-1]
+
+            E1, E2 = self.reconr_e_grid[i-1], self.reconr_e_grid[i]
+            xs1, xs2 = self.reconr_maj_xs_grid[i-1], self.reconr_maj_xs_grid[i]
+
+            return xs1 + (xs2 - xs1) * (energy - E1) / (E2 - E1)
+            
         
 
         return
@@ -839,6 +867,12 @@ class Geometry:
     def run_source(self, src, track_neutron: bool = False):
         self.source          = src
         self.perf.n_neutrons = src.neutron_nbr
+
+        print(f"Running source with following setttings:")
+        print(f"  Mode: {self.mode}")
+        print(f"  Majorant XS method: {self.maj_xs_method}")
+        print(f"  Material majorant method: {self.maj_mat_method}")
+        print(f"  Access method: {self.access_method}")
         self.perf.start()
 
         tracks = []
@@ -1042,6 +1076,8 @@ class Geometry:
             f"  Mean majorant [cm⁻¹]    : {np.mean(maj_values):>10.4f}",
             f"  Max  majorant [cm⁻¹]    : {np.max(maj_values):>10.4f}",
             f"  Mean margin (maj/real)  : {np.mean(maj_margins):>10.3f}",
+            f"  Min margin (maj/real)  : {np.min(maj_margins):>10.3f}",
+            f"  Max margin (maj/real)  : {np.max(maj_margins):>10.3f}",
             f"  Most-limiting material  : {top_mat}",
             "=" * 60,
         ]
