@@ -3,11 +3,9 @@ import pandas as pd
 import openmc
 import os
 import sys
-
+import math
+import bisect
 sys.path.append('/home/paule/open_mc_projects/windowed_multipole/02_working_notebook_vectfit')
-
-
-
 
 
 def build_majorant_xs_grid(
@@ -128,7 +126,7 @@ def build_majorant_xs_grid(
         err = abs(sigma_total_half - sigma_total_interp) / sigma_total_half
 
         if err > err_max and not convergence_flag:
-            point_grid = np.insert(point_grid, i_grid + 1, e_half)
+            point_grid = np.insert(point_grid, i_grid + 1, e_half_truncated)
         else:
             energy_grid.append(e_last)
             cross_section_grid.append(sigma_total)
@@ -193,10 +191,52 @@ def build_majorant_xs_grid(
 
 
 
-    table = np.column_stack((energy_grid, cross_section_grid))
+    print(f"Second pass done — {len(energy_grid)} points")
 
-    return energy_grid, cross_section_grid
+    # ── STEP 3: Deduplicate + window pointers ─────────────────────────────────
+    e_arr  = np.array(energy_grid)
+    xs_arr = np.array(cross_section_grid)
+
+    diffs = np.diff(e_arr)
     
+    if np.any(diffs <= 0):
+        print(f"WARNING: {(diffs <= 0).sum()} inversions found in energy grid before dedup")
+        print(f"  worst inversion: {diffs[diffs <= 0].min():.6e} eV")
+    else:
+        print("No inversions found in energy grid before dedup")
+
+    mask   = np.concatenate(([True], np.diff(e_arr) > 0))
+    e_arr  = e_arr[mask]
+    xs_arr = xs_arr[mask]
+    print(f"Deduplication removed {(~mask).sum()} points")
+
+    e_grid_list  = e_arr.tolist()
+    xs_grid_list = xs_arr.tolist()
+
+    # Build O(1) window pointers
+    print("Building O(1) Window Pointers...")
+    window_pointers  = []
+    current_window   = 0
+
+    #the window pointer is the index of the first point in the next window
+    window_pointers.append(0)
+    for idx, e in enumerate(e_grid_list):
+        w = int((math.sqrt(e) - np.sqrt(E_min)) / E_spacing)
+        while w > current_window:
+            window_pointers.append(idx)
+            current_window += 1
+
 
     
-    
+
+    window_pointers.append(len(e_grid_list))
+    print(f"Window pointer table: {len(window_pointers) - 1} windows")
+    print(f"Final grid size:      {len(e_grid_list)} points")
+
+    print("Window Pointers:", window_pointers)
+    print("Energy at first window pointer:", e_grid_list[window_pointers[0]])
+    print("First Energy Grid (eV):", e_grid_list[0])
+    print("Energy at last window pointer:", e_grid_list[window_pointers[-1]-1])
+    print("Last Energy Grid (eV):", e_grid_list[-1])
+
+    return e_grid_list, xs_grid_list, np.sqrt(E_min), E_spacing, window_pointers
