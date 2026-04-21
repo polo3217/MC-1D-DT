@@ -4,6 +4,9 @@ import json
 from pathlib import Path
 from datetime import datetime
 import pandas as pd
+from src.neutron_class import Neutron
+from src.source_class import Source, _BatchSource
+from src.geometry_classes import Geometry, Material
 
 # ============================================================================
 # Helper — safe array extraction from batch_stats
@@ -15,10 +18,38 @@ def _arr(d, *keys):
     return np.array(d)
 
 # ============================================================================
-# Print all cross-batch statistics
+# Print and or save memory usage from a batch
+# ============================================================================
+def export_memory_stats(geom, output_dir=None):
+    summary  = geom.memory.summary()
+    df_poll  = geom.memory.poll_to_dataframe()
+
+    base = Path(output_dir) if output_dir is not None else Path(".")
+
+    #check if output_dir exists, if not create it
+    if output_dir is not None:
+        base.mkdir(parents=True, exist_ok=True)
+
+    summary_path = base / "memory_summary.txt"
+    with open(summary_path, "w") as f:
+        f.write(summary)
+    print(f"Memory summary saved → {summary_path}")
+
+    poll_path = base / "memory_poll.csv"
+    df_poll.to_csv(poll_path, index=False)
+    print(f"Memory poll data saved → {poll_path}")
+
+    return
+
+
+# ============================================================================
+# Print and or save all cross-batch statistics
 # ============================================================================
 
-def export_cross_batch_stats(batch_stats, geom, print_to_console=True, save_csv=False, output_dir=None):
+def export_cross_batch_stats(batch_stats, geom, 
+                             print_to_console=True, 
+                             save_csv=False, 
+                             output_dir=None, ):
     eb = np.array(batch_stats["flux"]["energy_bins"])
     n_groups = len(eb) - 1
     group_labels = [f"{eb[i]:.0f}-{eb[i+1]:.0f} eV" for i in range(n_groups)]
@@ -53,6 +84,12 @@ def export_cross_batch_stats(batch_stats, geom, print_to_console=True, save_csv=
     # ── Leakage ───────────────────────────────────────────────────────────────
     leak_l = batch_stats["verif"]["leak_left"]
     leak_r = batch_stats["verif"]["leak_right"]
+
+    # performance
+    perf = batch_stats["perf"]
+
+    
+
     
     if print_to_console:
 
@@ -125,6 +162,14 @@ def export_cross_batch_stats(batch_stats, geom, print_to_console=True, save_csv=
         print(f"  {'n_virtual_collisions (total)':<30} {perf['n_virtual_collisions']:>14,}")
         print("="*70)
 
+        print("\n  WRONG MAJORANT STATISTICS")
+        print(f"  {'Metric':<30} {'Mean':>14} {'±Std':>14} {'Min':>10} {'Max':>10}")
+        print("  " + "-"*80)
+        for k in ("wrong_majorant_fraction", "wrong_majorant_mean_error"):
+            d = perf[k]
+            print(f"  {k:<30} {d['mean']:>14.4e} {d['std']:>14.4e} "
+                  f"{d['min']:>10.4e} {d['max']:>10.4e}")
+        print(f"  {'n_wrong_majorant (total)':<30} {perf['n_wrong_majorant']:>14,}")
 
 # ============================================================================
 # Save cross-batch statistics CSV
@@ -192,16 +237,76 @@ def export_cross_batch_stats(batch_stats, geom, print_to_console=True, save_csv=
                 "std"            : d["std"],
                 "relative_error" : d["relative_error"],
             })
+
+        # performance
+        perf = batch_stats["perf"]
+        for key in ("total_time_s", "neutrons_per_second", "rejection_fraction", "cpu_efficiency"):
+            cross_rows.append({
+                "tally"          : key,
+                "region"         : "performance",
+                "energy_group"   : "all",
+                "mean"           : perf[key]['mean'],
+                "std"            : perf[key]['std'],
+                "relative_error" : float("nan"),
+            })
+        cross_rows.append({
+            "tally"          : "n_neutrons (total)",
+            "region"         : "performance",
+            "energy_group"   : "all",
+            "mean"           : perf['n_neutrons'],
+            "std"            : float("nan"),
+            "relative_error" : float("nan"),
+        })
+        cross_rows.append({
+            "tally"          : "n_real_collisions (total)",
+            "region"         : "performance",
+            "energy_group"   : "all",
+            "mean"           : perf['n_real_collisions'],
+            "std"            : float("nan"),
+            "relative_error" : float("nan"),
+        })
+        cross_rows.append({
+            "tally"          : "n_virtual_collisions (total)",
+            "region"         : "performance",
+            "energy_group"   : "all",
+            "mean"           : perf['n_virtual_collisions'],
+            "std"            : float("nan"),
+            "relative_error" : float("nan"),
+        })
+
+
+        # In the CSV block, alongside the other perf keys:
+        for k in ("wrong_majorant_fraction", "wrong_majorant_mean_error"):
+                    cross_rows.append({
+                        "tally"          : k,
+                        "region"         : "performance",
+                        "energy_group"   : "all",
+                        "mean"           : perf[k]["mean"],
+                        "std"            : perf[k]["std"],
+                        "relative_error" : perf[k]["std"] / abs(perf[k]["mean"])
+                                        if perf[k]["mean"] != 0 else float("inf"),
+                    })
+        cross_rows.append({
+                    "tally"          : "n_wrong_majorant (total)",
+                    "region"         : "performance",
+                    "energy_group"   : "all",
+                    "mean"           : perf["n_wrong_majorant"],
+                    "std"            : float("nan"),
+                    "relative_error" : float("nan"),
+                })
+
         if output_dir == None:
             cross_path = "cross_batch_statistics_corrected.csv"
         else: 
-            cross_path = output_dir
+            cross_path = output_dir + "/cross_batch_statistics_corrected.csv"
         with open(cross_path, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=["tally", "region", "energy_group",
                                             "mean", "std", "relative_error"])
             w.writeheader()
             w.writerows(cross_rows)
         print(f"\nCross-batch statistics saved → {cross_path}")
+
+  
 
 def export_inner_batch_stats_csv(batch_stats, geom, output_dir=None):
     eb = np.array(batch_stats["flux"]["energy_bins"])
@@ -299,7 +404,7 @@ def export_inner_batch_stats_csv(batch_stats, geom, output_dir=None):
     if output_dir == None:
         inner_path = "inner_batch_statistics_corrected.csv"
     else:
-        inner_path = output_dir
+        inner_path = output_dir + "/inner_batch_statistics_corrected.csv"
     with open(inner_path, "w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=["batch", "n_neutrons", "wall_time_s",
                                         "tally", "region", "energy_group",

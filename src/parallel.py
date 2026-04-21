@@ -17,33 +17,34 @@ batch_stats = run_batch_parallel(geom, src, n_batches=20, n_workers=4)
 
 import pickle
 from multiprocessing import Pool
-from src.geometry_classes import Source
+from src.source_class import Source
+import psutil
+import os
 
 
 def _run_single_batch(args):
-    """
-    Worker function — must be top-level for multiprocessing pickle.
-    Deserializes a fresh geometry copy, runs one batch, returns the snapshot.
-    """
     geom_pickle, neutron_nbr, energy_range, energy_dist, position, direction, track_neutron = args
 
-    # Deserialize geometry — each worker gets its own independent copy
     geom = pickle.loads(geom_pickle)
-
-    # Reconstruct a batch source locally in the worker
-    
-    src = Source(
+    src  = Source(
         neutron_nbr  = neutron_nbr,
         energy_range = energy_range,
         energy_dist  = energy_dist,
         position     = position,
-        direction     = direction,
+        direction    = direction,
     )
 
     geom.reset()
     geom.run_source(src, track_neutron=track_neutron)
 
-    snap = {"perf": geom.perf.snapshot()}
+    # ── Report worker peak memory ──────────────────────────────────────
+    process   = psutil.Process(os.getpid())
+    peak_mb   = process.memory_info().rss / 1e6
+
+    snap = {
+        "perf"     : geom.perf.snapshot(),
+        "peak_mb"  : peak_mb,              # ← worker peak RSS
+    }
 
     if geom.flux_tally_flag and geom.flux_tally is not None:
         snap["flux"] = {

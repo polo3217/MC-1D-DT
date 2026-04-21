@@ -21,6 +21,8 @@ import bisect
 from multiprocessing import Pool
 import functools
 
+
+
 sys.path.append('/home/paule/open_mc_projects/windowed_multipole/02_working_notebook_vectfit')
 
 from dataclasses import dataclass, field
@@ -36,13 +38,17 @@ import openmc
 
 
 import majorant_multipole as maj
-from src.performance_classes import PerformanceTracker, MajorantRecord, NeutronHistory
+from src.source_class import Source
+from src.neutron_class import Neutron
+from src.performance_classes import PerformanceTracker, MajorantRecord, NeutronHistory, MemoryTracker
 from src.tally_classes import FluxTallyTLE, VerificationTally
 import src.group_xs as group_xs
 import src.vectfit as vf
 import src.discrete_evaluation as discrete
 import src.reconr_v2 as reconr
 import src.serpent_rothenstein as srp
+import src.parallel as parallel
+
 
 global  valid_nuclides_name 
 global  valid_nuclides_list 
@@ -53,29 +59,6 @@ valid_nuclides_list = [ '092238', '092235', '094239', '094240', '006000',  '0080
 xs_dir = '/home/paule/open_mc_projects/xs_lib/endfb-vii.1-hdf5/wmp'
 
 
-
-# ==========================================
-# --- Neutron class ---
-# ==========================================
-class Neutron:
-    def __init__(self, energy=1e6, position=None, direction=None):
-        self.energy    = energy
-        self.position  = position.copy()  if position  else [0, 0, 0]
-        self.direction = direction.copy() if direction else [1, 0, 0]
-        self.xs        = None
-        self.material  = None
-
-        # [MODIFIED] Optimization 1: Cache for Virtual Collision XS Loop
-        # These store the state of the last expensive cross-section evaluation
-        self.last_eval_energy = -1.0
-        self.last_eval_mat    = None
-        self.last_eval_xs     = None
-
-        # [MODIFIED] Optimization 2 & 3: Tally caching variables
-        # Stores the current index to avoid O(log N) lookups on every step
-        self.current_energy_bin = -1
-        # Accumulates track length locally to avoid array overhead during virtual steps
-        self.accumulated_distance = 0.0
 
 
 # ==========================================
@@ -141,8 +124,9 @@ class Geometry:
                  flux_tally=True,
                  verification_tally=True,
                  perf_tracker=True,
-                 majorant_log=True,
+                 majorant_log=False,
                  history_flag=False, 
+                 memory_flag=True, poll_interval : Optional[float] = 0.001,
                  verbose: bool = False):
         
         self._mode                = "analysis"  # "analysis" or "validation"
@@ -199,9 +183,12 @@ class Geometry:
         self.perf_tracker_flag       = perf_tracker
         self.majorant_log_flag       = majorant_log
         self.history_flag            = history_flag  # always store histories; can be filtered later based on mode or other criteria
+        self.memory_tracker_flag      = memory_flag  # not implemented yet, but placeholder for future memory tracking features
 
         # Initialise objects (always created; flags control whether they are used)
         self.perf:         PerformanceTracker          = PerformanceTracker()
+        self.memory:       MemoryTracker               = MemoryTracker(poll_interval=poll_interval)  # Initialize memory tracker
+
         self.histories:    List[NeutronHistory]        = []
         self._majorant_log: List[MajorantRecord]       = []
         self.flux_tally:   Optional[FluxTallyTLE]      = None
@@ -232,11 +219,31 @@ class Geometry:
         self.distance_score = 0
         self.distance_sampling_score = 0
         self.wrong_majorant_score = 0
+        self.wrong_majorant_error_score = 0.0
+
+        
+    # ------------------------------------------------------------------
+    # for multiprocessing run_batch_parallel
+    def __getstate__(self):
+        """Called by pickle.dumps — exclude unpicklable objects."""
+        state = self.__dict__.copy()
+        state['memory'] = None
+        return state
+
+    def __setstate__(self, state):
+        """Called by pickle.loads in the worker process."""
+        self.__dict__.update(state)
+        from src.performance_classes import MemoryTracker
+        self.memory = MemoryTracker()
+
     @property
     def mode(self):
         return self._mode
     
     def set_mode(self, value: str, filename: str = None):
+
+        if self.memory_tracker_flag:
+            self.memory.start()  # Start memory tracking thread
         if value not in ["analysis", "validation"]:
             raise ValueError("Mode must be 'analysis' or 'validation'")
         if value == "validation":
@@ -248,6 +255,9 @@ class Geometry:
             self.df_group_xs = group_xs.get_group_xs(filename, verbose=self.verbose)
         else:
             self._mode = value
+        
+        if self.memory_tracker_flag:
+            self.memory.stop()  # Start memory tracking thread
 
     @property 
     def maj_xs_method(self):
@@ -259,6 +269,10 @@ class Geometry:
                           Q: Optional[int] = 2, n_points_per_window: Optional[int] = 100,
                           T_bound_method: Optional[str] = "from_materials", 
                           T_bounds: Optional[List[float]] = None):
+        
+        if self.memory_tracker_flag:
+            self.memory.start()  # Start memory tracking thread
+        
         if method not in ["serpent", "vectfit", "sqrtE_T", "group", "discrete"]:
             raise ValueError("maj_xs_method must be 'serpent', 'vectfit', 'sqrtE_T', 'group' or 'discrete'")
         self._maj_xs_method = method
@@ -292,6 +306,11 @@ class Geometry:
 
         if method == "sqrtE_T":
             raise NotImplementedError("sqrtE_T majorant method not implemented yet")
+        if self.memory_tracker_flag:
+            self.memory.snapshot("maj_xs_method_setup")
+
+        if self.memory_tracker_flag:
+            self.memory.stop()  # Start memory tracking thread
         
     @property
     def maj_mat_method(self):
@@ -299,16 +318,26 @@ class Geometry:
 
     @maj_mat_method.setter
     def maj_mat_method(self, value):
+        if self.memory_tracker_flag:
+            self.memory.start()  # Start memory tracking thread
         self._maj_mat_method = value
         if value == "maj_mat":
             self.maj_mat    = self.build_majorant_all_material(verbose_maj=True)
-        
+        if self.memory_tracker_flag:
+            self.memory.snapshot("maj_mat_method_setup")
+
+        if self.memory_tracker_flag:
+            self.memory.stop()  # Start memory tracking thread
     @property
     def access_method(self):
         return self._access_method
     
     def set_access_method(self, value, err_lim=0.001, err_max=0.01, err_int=None,
                         last_window=None, last_energy=None):
+        
+        if self.memory_tracker_flag:
+            self.memory.start()  # Start memory tracking thread
+
         if value not in ["fly", "reconr"]:
             raise ValueError("access_method must be 'fly' or 'reconr'")
         self._access_method = value
@@ -320,7 +349,11 @@ class Geometry:
             print(f"materials:      {[mat.name for mat in self.materials]}")
 
             self.reconr_e_grid, self.reconr_maj_xs_grid, self.reconr_sqrt_E_min, self.reconr_e_spacing, self.reconr_window_pointers = reconr.build_majorant_xs_grid(self, err_lim, err_max, err_int, last_window, last_energy)
-            
+        if self.memory_tracker_flag:
+            self.memory.snapshot("access_method_setup")
+
+        if self.memory_tracker_flag:
+            self.memory.stop()  # Start memory tracking thread
 
     @property
     def majorant_log(self) -> List[MajorantRecord]:
@@ -341,6 +374,8 @@ class Geometry:
         return self._materials
 
     def add_material(self, mat: Material):
+        if self.memory_tracker_flag:
+            self.memory.start()
         if any(m.name == mat.name for m in self._materials):
             raise ValueError(f"Material with name '{mat.name}' already exists.")
         self._materials.append(mat)
@@ -348,6 +383,10 @@ class Geometry:
             print(nuclide[0].name)
             if nuclide[0].name not in self._nuclides:
                 self._nuclides[nuclide[0].name] = nuclide
+
+        if self.memory_tracker_flag:
+            self.memory.snapshot(f"add_material_{mat.name}")
+            self.memory.stop()
             
     @property
     def nuclides(self):
@@ -590,10 +629,11 @@ class Geometry:
             local_xs        = float(n.xs[0] + n.xs[1])
             acceptance_prob = local_xs / majorant_xs
             if acceptance_prob > 1.0:
-                print(f"Warning: Acceptance probability > 1.0 ({(1-acceptance_prob):.4e}). ")
-                acceptance_prob = 1.0
+                #print(f"Warning: Acceptance probability > 1.0 ({(acceptance_prob-1.0):.4e}). ")
+                
                 self.wrong_majorant_score += 1
                 self.wrong_majorant_error_score += acceptance_prob - 1.0
+                acceptance_prob = 1.0
 
             if self.verbose:
                 print(
@@ -950,9 +990,13 @@ class Geometry:
         return None, None, None, None
 
     # ------------------------------------------------------------------
-    def run_source(self, src, track_neutron: bool = False):
+    def run_source(self, src, track_neutron: bool = False, from_batch: bool = False):
         self.source          = src
         self.perf.n_neutrons = src.neutron_nbr
+
+        if self.memory_tracker_flag:
+            if not from_batch:
+                self.memory.start()
 
         print(f"Running source with following setttings:")
         print(f"  Mode: {self.mode}")
@@ -969,13 +1013,23 @@ class Geometry:
             if track_neutron:
                 tracks.append(result)
 
+        # Push wrong majorant counters into perf before stopping
+        self.perf.n_wrong_majorant           = self.wrong_majorant_score
+        self.perf.n_wrong_majorant_mean_error = self.wrong_majorant_error_score
+        self.perf.stop()
+
+
+        if self.memory_tracker_flag:
+            if not from_batch:
+                self.memory.snapshot("post_source_run")
+                self.memory.stop()
         self.perf.stop()
         return tracks if track_neutron else None
 
     # ------------------------------------------------------------------
-    # [NEW] run_batch()
+    # [NEW] run_batch_serial()
     # ─────────────────────────────────────────────────────────────────
-    def run_batch(self, src, n_batches: int, track_neutron: bool = False):
+    def run_batch_serial(self, src, n_batches: int, track_neutron: bool = False):
 
         if n_batches < 2:
             raise ValueError("n_batches must be >= 2 to compute cross-batch statistics.")
@@ -985,9 +1039,13 @@ class Geometry:
 
         self.batch_results = []
 
+        if self.memory_tracker_flag:
+            self.memory.start()
+
         for batch_idx in range(n_batches):
 
             batch_n = neutrons_per_batch 
+
 
             if batch_n <= 0:
                 raise ValueError(
@@ -998,8 +1056,9 @@ class Geometry:
             batch_src = src.generate_batch(batch_n)
 
             self.reset()
-            self.run_source(batch_src, track_neutron=track_neutron)
-
+            self.run_source(batch_src, track_neutron=track_neutron, from_batch=True)
+            if self.memory_tracker_flag:
+                self.memory.snapshot(f"post_batch_{batch_idx+1}")
             snap = {
                 "batch"     : batch_idx,
                 "n_neutrons": batch_n,
@@ -1023,7 +1082,41 @@ class Geometry:
                 f"wall={self.perf.total_time:.3f}s")
 
         self.batch_stats = self._compute_batch_stats()
+        if self.memory_tracker_flag:
+            self.memory.snapshot("post_batch_processing")
+        if self.memory_tracker_flag:
+            self.memory.stop()
         return self.batch_stats
+    
+    def run_batch_parallel(self, src, n_batches: int, n_workers=None,
+                       track_neutron: bool = False):
+
+        if self.memory_tracker_flag:
+            self.memory.start()
+            self.memory.snapshot("parallel_start")
+
+        batch_stats = parallel.run_batch_parallel(
+            geom          = self,
+            src           = src,
+            n_batches     = n_batches,
+            n_workers     = n_workers,
+            track_neutron = track_neutron,
+        )
+
+        if self.memory_tracker_flag:
+            # Snapshot each batch's reported worker peak memory
+            for i, result in enumerate(self.batch_results):
+                if "peak_mb" in result:
+                    self.memory.snapshot(
+                        f"worker_batch_{i+1}_peak",
+                        external_rss_mb = result["peak_mb"]   # see below
+                    )
+            self.memory.snapshot("parallel_reduction_done")
+            self.memory.stop()
+
+        return batch_stats
+    
+
 
     # ------------------------------------------------------------------
     # [NEW] _compute_batch_stats()
@@ -1119,6 +1212,23 @@ class Geometry:
                   "n_virtual_collisions", "n_majorant_updates"):
             perf_stats[k] = int(sum(r["perf"][k] for r in self.batch_results))
         stats["perf"] = perf_stats
+
+        # ── wrong majorant statistics ─────────────────────────────────────────
+        for k in ("wrong_majorant_fraction", "wrong_majorant_mean_error"):
+            vals = np.array([r["perf"][k] for r in self.batch_results])
+            perf_stats[k] = {
+                "mean": float(vals.mean()),
+                "std" : float(vals.std(ddof=1)),
+                "min" : float(vals.min()),
+                "max" : float(vals.max()),
+            }
+
+        # total count — sum not average
+        perf_stats["n_wrong_majorant"] = int(sum(
+            r["perf"]["n_wrong_majorant"] for r in self.batch_results
+        ))
+        
+
 
         return stats
 
@@ -1223,92 +1333,11 @@ class Geometry:
             for r in self._majorant_log
         ]
         return pd.DataFrame(rows)
+    
+    def memory_summary(self) -> str:
+        return self.memory.summary()
+    
+    def memory_log_to_dataframe(self):
+        return self.memory.to_dataframe()
 
 
-# ==========================================
-# --- Source class ---
-# ==========================================
-class Source:
-    """
-    --- CHANGES FROM ORIGINAL ---
-    [NEW] generate_batch(n) method: samples n neutrons on-the-fly and returns
-          a lightweight _BatchSource object understood by run_source / run_batch.
-          This avoids allocating all neutrons upfront when only a fraction are
-          needed for a single batch.
-    [NO CHANGE] __init__ and existing neutrons list are identical.
-    """
-
-    def __init__(self, neutron_nbr: int,
-                 energy_range=(0.1, 1e6),
-                 energy_dist: str = "flat",
-                 position=None,
-                 direction=None):
-        self.neutron_nbr  = neutron_nbr
-        self.energy_range = list(energy_range)
-        self.energy_dist  = energy_dist
-        self.position     = position.copy()  if position  else [0, 0, 0]
-        self.direction    = direction.copy() if direction else [1, 0, 0]
-        self.neutrons: List[Neutron] = []
-
-        for _ in range(neutron_nbr):
-            if energy_dist == "flat":
-                energy = float(np.random.uniform(*energy_range))
-            elif energy_dist == "mono":
-                energy = float(energy_range[0])
-            else:
-                raise ValueError(f"Unknown energy_dist: '{energy_dist}'")
-
-            self.neutrons.append(
-                Neutron(energy, self.position.copy(), self.direction.copy())
-            )
-
-    # [NEW] generate_batch()
-    def generate_batch(self, n: int) -> "_BatchSource":
-        """
-        Sample n neutrons from the same distribution as __init__ and return
-        a lightweight _BatchSource that looks like a source to run_source().
-
-        Parameters
-        ----------
-        n : number of neutrons for this batch
-
-        Returns
-        -------
-        _BatchSource with .neutron_nbr == n and .neutrons list of length n
-        """
-
-
-        if n <= 0:
-            raise ValueError(f"generate_batch() called with n={n}. Must be > 0.")
-            
-
-        batch_neutrons = []
-        for _ in range(n):
-            if self.energy_dist == "flat":
-                energy = float(np.random.uniform(*self.energy_range))
-            elif self.energy_dist == "mono":
-                energy = float(self.energy_range[0])
-            else:
-                raise ValueError(f"Unknown energy_dist: '{self.energy_dist}'")
-            batch_neutrons.append(
-                Neutron(energy, self.position.copy(), self.direction.copy())
-            )
-        return _BatchSource(n, batch_neutrons)
-
-
-# ==========================================
-# [NEW] --- _BatchSource helper class ---
-# ==========================================
-class _BatchSource:
-    """
-    Minimal source-like object returned by source.generate_batch().
-
-    Has the same interface expected by geometry.run_source():
-        .neutron_nbr  : int
-        .neutrons     : list[Neutron]
-
-    Not intended to be constructed directly by user code.
-    """
-    def __init__(self, neutron_nbr: int, neutrons: List[Neutron]):
-        self.neutron_nbr = neutron_nbr
-        self.neutrons    = neutrons

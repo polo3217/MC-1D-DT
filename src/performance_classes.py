@@ -6,14 +6,245 @@ from dataclasses import dataclass, field
 import time
 from datetime import datetime
 from pathlib import Path
+from itertools import accumulate
 
 from typing import List, Optional
 import numpy as np
+import pandas as pd
+
 import majorant_multipole as maj
 import openmc
 import reconr
+import psutil
+
+#==========================================
+# --- Memory usage tracking (optional) ---
+#==========================================
+# src/memory_tracker.py
+
+import os
+import time
+import threading
+import psutil
+import pandas as pd
+from dataclasses import dataclass, field
+from typing import List, Optional
 
 
+@dataclass
+class MemorySnapshot:
+    label       : str
+    timestamp   : float
+    rss_mb      : float
+    vms_mb      : float
+
+
+class MemoryTracker:
+    """
+    Tracks process memory usage over time using psutil.
+
+    Two complementary mechanisms:
+      1. Manual snapshots  — point-in-time, labeled, called explicitly
+      2. Background poller — samples RSS every `poll_interval` seconds,
+                             captures the true peak even between snapshots
+
+    Usage
+    -----
+    tracker = MemoryTracker(poll_interval=0.1)
+    tracker.start()
+
+    geom.set_access_method("reconr", ...)
+    tracker.snapshot("after_reconr")
+
+    geom.run_batch(src, n_batches=10)
+    tracker.snapshot("after_run")
+
+    tracker.stop()
+    print(tracker.summary())
+    """
+
+    def __init__(self, poll_interval: float = 0.1):
+        """
+        Parameters
+        ----------
+        poll_interval : float
+            Seconds between background RSS samples. 
+            0.01 = 10ms  (high resolution, negligible overhead)
+            0.1  = 100ms (good default)
+            1.0  = 1s    (low overhead, may miss short spikes)
+        """
+        self._process       = psutil.Process(os.getpid())
+        self._snapshots     : List[MemorySnapshot] = []
+        self._poll_interval = poll_interval
+        self._t0            = time.perf_counter()
+
+        # Background poller state
+        self._poll_rss      : List[float] = []   # all sampled RSS values
+        self._poll_times    : List[float] = []   # corresponding timestamps
+        self._peak_rss_mb   = 0.0
+        self._polling       = False
+        self._thread        : Optional[threading.Thread] = None
+
+    # make MemoryTracker picklable for multiprocessing (worker processes won't start the poller thread)
+    def __getstate__(self):
+        state = self.__dict__.copy()
+        # Remove thread and event — not picklable
+        state['_thread']  = None
+        state['_polling'] = False
+        return state
+
+    def __setstate__(self, state):
+        self.__dict__.update(state)
+        # Restore thread as None — worker never starts polling
+        self._thread  = None
+        self._polling = False
+
+    # ── Background poller ─────────────────────────────────────────────────────
+
+    def start(self):
+        """Start the background memory polling thread."""
+        if self._polling:
+            return
+        self._polling = True
+        
+        self._thread  = threading.Thread(
+            target   = self._poll_loop,
+            daemon   = True,    # dies automatically if main process exits
+            name     = "MemoryPoller",
+        )
+        self._thread.start()
+        self.snapshot("init")
+        print(f"Memory tracker started (poll interval: {self._poll_interval*1000:.0f} ms)")
+
+    def stop(self):
+        """Stop the background polling thread."""
+        self._polling = False
+        if self._thread is not None:
+            self._thread.join(timeout=2.0)
+        self.snapshot("stop")
+        print("Memory tracker stopped.")
+
+    def _poll_loop(self):
+        """Runs in background thread — samples RSS continuously."""
+        while self._polling:
+            try:
+                rss = self._process.memory_info().rss / 1e6
+                t   = time.perf_counter() - self._t0
+                self._poll_rss.append(rss)
+                self._poll_times.append(t)
+                if rss > self._peak_rss_mb:
+                    self._peak_rss_mb = rss
+            except psutil.NoSuchProcess:
+                break
+            time.sleep(self._poll_interval)
+
+    # ── Manual snapshots ──────────────────────────────────────────────────────
+
+    def snapshot(self, label: str,
+             external_rss_mb: float = None) -> MemorySnapshot:
+        """
+        Record memory usage with a label.
+
+        Parameters
+        ----------
+        external_rss_mb : float, optional
+            If provided, use this RSS value instead of reading from the
+            current process. Used to record worker-process memory in
+            parallel runs.
+        """
+        if external_rss_mb is not None:
+            rss = external_rss_mb
+            vms = 0.0   # not available from worker report
+        else:
+            mem = self._process.memory_info()
+            rss = mem.rss / 1e6
+            vms = mem.vms / 1e6
+
+        snap = MemorySnapshot(
+            label     = label,
+            timestamp = time.perf_counter() - self._t0,
+            rss_mb    = rss,
+            vms_mb    = vms,
+        )
+        self._snapshots.append(snap)
+        if rss > self._peak_rss_mb:
+            self._peak_rss_mb = rss
+        return snap
+    
+    # ── Accessors ─────────────────────────────────────────────────────────────
+
+    def peak_mb(self) -> float:
+        """True peak RSS — includes all background samples."""
+        return self._peak_rss_mb
+
+    def current_mb(self) -> float:
+        """Current RSS without storing a snapshot."""
+        return self._process.memory_info().rss / 1e6
+
+    def delta_mb(self, label_a: str, label_b: str) -> float:
+        """RSS delta in MB between two labeled snapshots."""
+        a = self._get(label_a)
+        b = self._get(label_b)
+        if a is None or b is None:
+            raise KeyError(f"Label not found: {label_a!r} or {label_b!r}")
+        return b.rss_mb - a.rss_mb
+
+    # ── DataFrames ────────────────────────────────────────────────────────────
+
+    def snapshots_to_dataframe(self) -> pd.DataFrame:
+        """Manual snapshots only."""
+        base = self._snapshots[0].rss_mb if self._snapshots else 0.0
+        return pd.DataFrame([
+            {
+                "label"    : s.label,
+                "time_s"   : round(s.timestamp, 7),
+                "rss_mb"   : round(s.rss_mb, 7),
+                "vms_mb"   : round(s.vms_mb, 7),
+                "delta_mb" : round(s.rss_mb - base, 7),
+            }
+            for s in self._snapshots
+        ])
+
+    def poll_to_dataframe(self) -> pd.DataFrame:
+        """Full continuous RSS trace from background poller."""
+        
+        return pd.DataFrame({
+            "time_s" : [round(t, 7) for t in self._poll_times],
+            "rss_mb" : [round(r, 7) for r in self._poll_rss],
+        })
+
+    # ── Summary ───────────────────────────────────────────────────────────────
+
+    def summary(self) -> str:
+        if not self._snapshots:
+            return "No snapshots recorded."
+
+        base  = self._snapshots[0].rss_mb
+        df    = self.snapshots_to_dataframe()
+        lines = [
+            "=" * 65,
+            "  MEMORY TRACKER SUMMARY",
+            "=" * 65,
+            f"  Baseline RSS          : {base:.3e} MB",
+            f"  Peak RSS (continuous) : {self._peak_rss_mb:.3e} MB",
+            f"  Total growth          : {self._peak_rss_mb - base:+.3e} MB",
+            "-" * 65,
+            f"  {'Label':<28} {'RSS (MB)':>9} {'Delta (MB)':>11} {'Time (s)':>9}",
+            "-" * 65,
+        ]
+        for _, row in df.iterrows():
+            lines.append(
+                f"  {row['label']:<28} {row['rss_mb']:>9.1f} "
+                f"{row['delta_mb']:>+11.1f} {row['time_s']:>9.3f}"
+            )
+        lines.append("=" * 65)
+        return "\n".join(lines)
+
+    def _get(self, label: str) -> Optional[MemorySnapshot]:
+        for s in reversed(self._snapshots):
+            if s.label == label:
+                return s
+        return None
 
 # ==========================================
 # --- PerformanceTracker dataclass ---
@@ -54,6 +285,9 @@ class PerformanceTracker:
     n_virtual_collisions: int = 0
     n_xs_evaluations:     int = 0
     n_majorant_updates:   int = 0
+    n_wrong_majorant:      int = 0
+    n_wrong_majorant_mean_error: float = 0.0
+
 
     # ── wall-clock timers [seconds] ───────────────────────────────────────────
     time_majorant:        float = 0.0
@@ -98,6 +332,14 @@ class PerformanceTracker:
     def rejection_fraction(self) -> float:
         total = self.n_virtual_collisions + self.n_real_collisions
         return self.n_virtual_collisions / total if total > 0 else 0.0
+    
+    @property
+    def wrong_majorant_mean_error(self) -> float:
+        return self.n_wrong_majorant_mean_error / self.n_wrong_majorant if self.n_wrong_majorant > 0 else 0.0
+    
+    @property
+    def wrong_majorant_fraction(self) -> float:
+        return self.n_wrong_majorant / self.n_majorant_updates if self.n_majorant_updates > 0 else 0.0
 
     # ── summary ───────────────────────────────────────────────────────────────
     def summary(self) -> str:
@@ -118,6 +360,8 @@ class PerformanceTracker:
             f"  Real collisions              : {self.n_real_collisions:>10,}",
             f"  Virtual (rejected)           : {self.n_virtual_collisions:>10,}",
             f"  Rejection fraction           : {self.rejection_fraction:>10.3%}",
+            f"  Wrong majorant fraction      : {self.wrong_majorant_fraction:>10.3%}",
+            f"  Wrong majorant mean error      : {self.wrong_majorant_mean_error:>10.3%}",
             "=" * 60,
         ]
         return "\n".join(lines)
@@ -139,6 +383,9 @@ class PerformanceTracker:
             "rejection_fraction"   : self.rejection_fraction,
             "time_majorant_s"      : self.time_majorant,
             "time_xs_eval_s"       : self.time_xs_eval,
+            "n_wrong_majorant"     : self.n_wrong_majorant,
+            "wrong_majorant_mean_error" : self.wrong_majorant_mean_error,
+            "wrong_majorant_fraction" : self.wrong_majorant_fraction
         }
 
 # ==========================================
