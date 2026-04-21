@@ -40,8 +40,9 @@ from src.performance_classes import PerformanceTracker, MajorantRecord, NeutronH
 from src.tally_classes import FluxTallyTLE, VerificationTally
 import src.group_xs as group_xs
 import src.vectfit as vf
-import src.serpent_evaluation as srp
+import src.discrete_evaluation as discrete
 import src.reconr_v2 as reconr
+import src.serpent_rothenstein as srp
 
 global  valid_nuclides_name 
 global  valid_nuclides_list 
@@ -145,12 +146,19 @@ class Geometry:
                  verbose: bool = False):
         
         self._mode                = "analysis"  # "analysis" or "validation"
-        self._maj_xs_method       = "serpent"      # "vectfit", "sqrtE_T" or "serpent" or "point"
+        self._maj_xs_method       = "discrete"      # "vectfit", "sqrtE_T" or "discrete" or "point" or "serpent"
         self._maj_mat_method      = "simple"     # "simple" or "maj_mat"
-        self._access_method        = "fly"        # "fly" or "reconr"
+        self._access_method        = "fly"        # "fly" or "reconr" or 
 
-        #specific for serpent majorant_xs_method
+        #specific for discrete majorant_xs_method
         self.T_array        = None
+
+        #specific the serpent/rohtenstein majorant method
+        self.Q = 0
+        self.n_points_per_window = 0
+        self.T_min = 0
+        self.T_max = 0
+
 
         self._materials      = []
         self._nuclides       = {}
@@ -158,6 +166,9 @@ class Geometry:
         self.material_array  = []
         self.source          = None
         self.verbose         = verbose
+
+
+
         
         # specific for the maj_mat_method 
         self.maj_mat  : Material       = None
@@ -179,6 +190,8 @@ class Geometry:
         self.rejection_score         = 0
         self.distance_score          = 0
         self.distance_sampling_score = 0
+        self.wrong_majorant_score    = 0
+        self.wrong_majorant_error_score   = 0.0
 
         # Flags to control which features are active
         self.flux_tally_flag         = flux_tally
@@ -218,7 +231,7 @@ class Geometry:
         self.rejection_score = 0
         self.distance_score = 0
         self.distance_sampling_score = 0
-
+        self.wrong_majorant_score = 0
     @property
     def mode(self):
         return self._mode
@@ -242,9 +255,12 @@ class Geometry:
     
     def set_maj_xs_method(self, method: str = "serpent", verbose: bool = False,
                           T_array: Optional[np.ndarray] = None,
-                          xs_maj_file_dir : Optional[str] = None):
-        if method not in ["serpent", "vectfit", "sqrtE_T", "group"]:
-            raise ValueError("maj_xs_method must be 'serpent', 'vectfit', 'sqrtE_T' or 'group'")
+                          xs_maj_file_dir : Optional[str] = None,
+                          Q: Optional[int] = 2, n_points_per_window: Optional[int] = 100,
+                          T_bound_method: Optional[str] = "from_materials", 
+                          T_bounds: Optional[List[float]] = None):
+        if method not in ["serpent", "vectfit", "sqrtE_T", "group", "discrete"]:
+            raise ValueError("maj_xs_method must be 'serpent', 'vectfit', 'sqrtE_T', 'group' or 'discrete'")
         self._maj_xs_method = method
 
         if method == "vectfit":
@@ -252,10 +268,27 @@ class Geometry:
                 raise ValueError("file_dir must be provided when setting maj_xs_method to 'vectfit'")
             self.xs_maj_tables = vf.xs_majorant_tables(file_dir=xs_maj_file_dir, verbose=verbose)
 
-        if method == "serpent":
+        if method == "discrete":
             if T_array is None:
-                raise ValueError("T_array must be provided when setting maj_xs_method to 'serpent'")
+                raise ValueError("T_array must be provided when setting maj_xs_method to 'discrete'")
             self.T_array = T_array
+
+        if method == "serpent":
+            print("Warning: Serpent/Rothenstein Temperature majorant method should be used with the reconr access method.")
+            print("Setting T bounds for Serpent/Rothenstein majorant method...")
+            if T_bound_method == "user_defined":
+                assert T_bounds is not None, "T_bounds must be provided when T_bound_method is 'user_defined'"
+                self.T_min = T_bounds[0]
+                self.T_max = T_bounds[1]
+            elif T_bound_method == "from_materials":
+                if not self.materials:
+                    raise ValueError("Materials must be defined to determine temperature bounds from materials.")
+                self.T_min = min(mat.T for mat in self.materials)
+                self.T_max = max(mat.T for mat in self.materials)
+            print(f"Serpent/Rothenstein majorant method T bounds set to: T_min = {self.T_min} K, T_max = {self.T_max} K")
+            self.Q = Q
+            self.n_points_per_window = n_points_per_window
+
 
         if method == "sqrtE_T":
             raise NotImplementedError("sqrtE_T majorant method not implemented yet")
@@ -382,11 +415,14 @@ class Geometry:
             raise NotImplementedError("sqrtE_T majorant method not implemented yet")
         
         elif self.maj_xs_method == "serpent":
+            return srp.find_majorant_xs_rothenstein(nuclide, energy, T_min=self.T_min, T_max=self.T_max, Q=self.Q, n_points_per_window=self.n_points_per_window)
+        
+        elif self.maj_xs_method == "discrete":
             if self.maj_mat_method == "maj_mat":
-                raise ValueError ("Serpent majorant method is not compatile with the maj_mat method -- There is no way to know the temperature at wich to evaluate the majorant.")
+                raise ValueError ("Discrete majorant method is not compatile with the maj_mat method -- There is no way to know the temperature at wich to evaluate the majorant.")
             if self.T_array is None:
-                raise ValueError("T_array must be provided for serpent majorant method")
-            return srp.serpent_majorant(energy, T_eval=temperature, T_array=self.T_array, nuclide=nuclide)
+                raise ValueError("T_array must be provided for discrete majorant method")
+            return discrete.discrete_majorant(energy, T_eval=temperature, T_array=self.T_array, nuclide=nuclide)
 
         return
     
@@ -553,6 +589,11 @@ class Geometry:
 
             local_xs        = float(n.xs[0] + n.xs[1])
             acceptance_prob = local_xs / majorant_xs
+            if acceptance_prob > 1.0:
+                print(f"Warning: Acceptance probability > 1.0 ({(1-acceptance_prob):.4e}). ")
+                acceptance_prob = 1.0
+                self.wrong_majorant_score += 1
+                self.wrong_majorant_error_score += acceptance_prob - 1.0
 
             if self.verbose:
                 print(
@@ -1093,6 +1134,8 @@ class Geometry:
         mean_scatters = self.scattering_score / n
         mean_virtual  = self.rejection_score  / n
         mean_path     = self.distance_score   / n
+        mean_wrong_maj_error = (self.wrong_majorant_error_score / self.wrong_majorant_score) if self.wrong_majorant_score > 0 else 0.0
+        wrong_majorant_Rate = self.wrong_majorant_score / len(self._majorant_log) if len(self._majorant_log) > 0 else 0.0
 
         if self.majorant_log_flag and self._majorant_log:
             maj_values  = [r.value  for r in self._majorant_log]
@@ -1127,6 +1170,9 @@ class Geometry:
             f"  Min margin (maj/real)  : {np.min(maj_margins):>10.3f}",
             f"  Max margin (maj/real)  : {np.max(maj_margins):>10.3f}",
             f"  Most-limiting material  : {top_mat}",
+            f"  Wrong majorant updates  : {self.wrong_majorant_score:>10,}",
+            f"  Wrong majorant mean error sum : {mean_wrong_maj_error:.4f}",
+            f"  Wrong majorant rate     : {wrong_majorant_Rate:.4f}",
             "=" * 60,
         ]
 

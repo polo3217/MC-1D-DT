@@ -3,6 +3,7 @@ parallel.py
 ===========
 
 ## AI Genereted : still to be checked
+# It was tested and it works. Not changes from initial AI version
 
 
 Batch-level parallelism for Monte Carlo neutron transport.

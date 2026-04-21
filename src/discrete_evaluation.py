@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 import openmc
 
-def serpent_majorant(E : float, T_eval,  T_array : np.ndarray = None, nuclide=None):
+def discrete_majorant(E : float, T_eval,  T_array : np.ndarray = None, nuclide=None):
 
         """
         Evaluate the majorant cross section at E over a temperature range and return maximum value
