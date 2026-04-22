@@ -63,7 +63,7 @@ class MemoryTracker:
     print(tracker.summary())
     """
 
-    def __init__(self, poll_interval: float = 0.1):
+    def __init__(self, poll_interval: float = 0.001):
         """
         Parameters
         ----------
@@ -114,7 +114,7 @@ class MemoryTracker:
         )
         self._thread.start()
         self.snapshot("init")
-        print(f"Memory tracker started (poll interval: {self._poll_interval*1000:.0f} ms)")
+        print(f"\n Memory tracker started (poll interval: {self._poll_interval*1000:.0f} ms)")
 
     def stop(self):
         """Stop the background polling thread."""
@@ -122,7 +122,7 @@ class MemoryTracker:
         if self._thread is not None:
             self._thread.join(timeout=2.0)
         self.snapshot("stop")
-        print("Memory tracker stopped.")
+        print(f"\n Memory tracker stopped.")
 
     def _poll_loop(self):
         """Runs in background thread — samples RSS continuously."""
