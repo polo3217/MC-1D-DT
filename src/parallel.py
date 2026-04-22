@@ -98,7 +98,8 @@ def run_batch_parallel(geom, src, n_batches, n_workers=None, track_neutron=False
         for _ in range(n_batches)
     ]
 
-    print(f"Running {n_batches} batches on {n_workers or 'all'} workers...")
+    # [CHANGED] Added parallel prefix for better log reading
+    print(f"\n[Parallel] Running {n_batches} batches on {n_workers or 'all'} workers...")
     with Pool(processes=n_workers) as pool:
         geom.batch_results = pool.map(_run_single_batch, args)
 

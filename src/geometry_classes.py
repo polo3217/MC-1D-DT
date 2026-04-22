@@ -71,7 +71,8 @@ class Material:
         #nuclides are defined by name and than the multipole library is loaded
         self.nuclides = nuclides if nuclides is not None else []
         for i, pair in enumerate(self.nuclides):
-            print(pair)
+            # [CHANGED] Clean professional print instead of raw tuple output
+            print(f"[Material] Processing nuclide pair: {pair[0]} (Density: {pair[1]:.2e})")
             nuclide_name = pair[0]
             nuclide_density = pair[1]
             
@@ -288,8 +289,10 @@ class Geometry:
             self.T_array = T_array
 
         if method == "serpent":
-            print("Warning: Serpent/Rothenstein Temperature majorant method should be used with the reconr access method.")
-            print("Setting T bounds for Serpent/Rothenstein majorant method...")
+            # [CHANGED] Professionalized setup prints, detailed info moved to verbose
+            if self.verbose:
+                print("  [Warning] Serpent/Rothenstein Temperature majorant method should be used with the reconr access method.")
+            print("[Setup] Setting T bounds for Serpent/Rothenstein majorant method...")
             if T_bound_method == "user_defined":
                 assert T_bounds is not None, "T_bounds must be provided when T_bound_method is 'user_defined'"
                 self.T_min = T_bounds[0]
@@ -299,7 +302,7 @@ class Geometry:
                     raise ValueError("Materials must be defined to determine temperature bounds from materials.")
                 self.T_min = min(mat.T for mat in self.materials)
                 self.T_max = max(mat.T for mat in self.materials)
-            print(f"Serpent/Rothenstein majorant method T bounds set to: T_min = {self.T_min} K, T_max = {self.T_max} K")
+            print(f"  [Setup] Serpent/Rothenstein T bounds set: T_min = {self.T_min} K, T_max = {self.T_max} K")
             self.Q = Q
             self.n_points_per_window = n_points_per_window
 
@@ -343,10 +346,12 @@ class Geometry:
         self._access_method = value
 
         if value == "reconr":
-            print("Building majorant XS grid for RECONR access method with settings:")
-            print(f"xs_method:      {self.maj_xs_method}")
-            print(f"maj_mat_method: {self.maj_mat_method}")
-            print(f"materials:      {[mat.name for mat in self.materials]}")
+            # [CHANGED] Professional print formatting, detailed lists behind verbose
+            print("[Setup] Building majorant XS grid for RECONR access method...")
+            if self.verbose:
+                print(f"  -> xs_method:      {self.maj_xs_method}")
+                print(f"  -> maj_mat_method: {self.maj_mat_method}")
+                print(f"  -> materials:      {[mat.name for mat in self.materials]}")
 
             self.reconr_e_grid, self.reconr_maj_xs_grid, self.reconr_sqrt_E_min, self.reconr_e_spacing, self.reconr_window_pointers = reconr.build_majorant_xs_grid(self, err_lim, err_max, err_int, last_window, last_energy)
         if self.memory_tracker_flag:
@@ -380,7 +385,9 @@ class Geometry:
             raise ValueError(f"Material with name '{mat.name}' already exists.")
         self._materials.append(mat)
         for nuclide in mat.nuclides:
-            print(nuclide[0].name)
+            # [CHANGED] Clean professional print, tied to verbose flag
+            if self.verbose:
+                print(f"  [Material] Loaded nuclide: {nuclide[0].name}")
             if nuclide[0].name not in self._nuclides:
                 self._nuclides[nuclide[0].name] = nuclide
 
@@ -636,8 +643,9 @@ class Geometry:
                 acceptance_prob = 1.0
 
             if self.verbose:
+                # [CHANGED] Adjusted trace for cleaner alignment
                 print(
-                    f"  Material: {mat.name:12s} | "
+                    f"  [Trace] Mat: {mat.name:12s} | "
                     f"local_xs: {local_xs:.4f} | "
                     f"majorant: {majorant_xs:.4f} | "
                     f"ratio: {acceptance_prob:.4f}"
@@ -678,8 +686,9 @@ class Geometry:
             acceptance_prob = local_xs / majorant_xs
 
             if self.verbose:
+                # [CHANGED] Adjusted trace for cleaner alignment
                 print(
-                    f"  Material: {mat.name:12s} | "
+                    f"  [Trace] Mat: {mat.name:12s} | "
                     f"local_xs: {local_xs:.4f} | "
                     f"majorant: {majorant_xs:.4f} | "
                     f"ratio: {acceptance_prob:.4f}"
@@ -998,11 +1007,12 @@ class Geometry:
             if not from_batch:
                 self.memory.start()
 
-        print(f"Running source with following setttings:")
-        print(f"  Mode: {self.mode}")
-        print(f"  Majorant XS method: {self.maj_xs_method}")
-        print(f"  Material majorant method: {self.maj_mat_method}")
-        print(f"  Access method: {self.access_method}")
+        # [CHANGED] Grouped simulation start info into a cleaner format, details on verbose
+        print(f"\n[Simulation] Running source (Mode: {self.mode})")
+        if self.verbose:
+            print(f"  -> Majorant XS method:       {self.maj_xs_method}")
+            print(f"  -> Material majorant method: {self.maj_mat_method}")
+            print(f"  -> Access method:            {self.access_method}")
         self.perf.start()
 
         tracks = []
@@ -1077,9 +1087,10 @@ class Geometry:
                 snap["verif"] = self.verif_tally.snapshot()
 
             self.batch_results.append(snap)
-            print(f"  Batch {batch_idx+1:>3}/{n_batches}  "
-                f"({batch_n} neutrons)  "
-                f"wall={self.perf.total_time:.3f}s")
+            # [CHANGED] Updated to a cleaner professional status update
+            print(f"  [Batch] {batch_idx+1:>3}/{n_batches} "
+                  f"({batch_n} neutrons) | "
+                  f"wall = {self.perf.total_time:.3f}s")
 
         self.batch_stats = self._compute_batch_stats()
         if self.memory_tracker_flag:
@@ -1339,5 +1350,3 @@ class Geometry:
     
     def memory_log_to_dataframe(self):
         return self.memory.to_dataframe()
-
-
