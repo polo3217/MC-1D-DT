@@ -7,6 +7,9 @@ import math
 import bisect
 sys.path.append('/home/paule/open_mc_projects/windowed_multipole/02_working_notebook_vectfit')
 
+### RECONR v2 implementation for building a majorant cross section grid with O(1) window pointers
+### ATTENTION : Additional safety margin is added to the majorant cross section to ensure it is always above the true cross section, which is critical for the correctness of the Monte Carlo simulation. The error thresholds (err_lim, err_max, err_int) can be tuned to balance accuracy and grid size.
+
 
 def build_majorant_xs_grid(
         geometry,
@@ -60,10 +63,8 @@ def build_majorant_xs_grid(
 
     # create an array of the size of n_windows
     point_grid = []
-    # [CHANGED] Debug prints formatted professionally and wrapped in verbose check
-    if geometry.verbose:
-        print(f"  [RECONR Debug] Target n_windows: {n_windows}")
-        print(f"  [RECONR Debug] Maximum Energy (E_max): {E_max:.2e} eV")
+    print(n_windows)
+    print(E_max)
     for i in range(n_windows):
         E_grid = (np.sqrt(E_min) + (i)* (E_spacing))**2
         if E_grid > E_max:
@@ -82,12 +83,10 @@ def build_majorant_xs_grid(
     last_window = len(point_grid)
     last_energy_to_add = point_grid[-1]
 
-    # [CHANGED] Clean professional print for RECONR start
-    print("[RECONR] Evaluating majorant cross section (Stacking Algorithm)")
-    if geometry.verbose:
-        print(f"  -> err_lim: {err_lim}, err_max: {err_max}, err_int: {err_int}")
-        print(f"  -> Last energy to add: {last_energy_to_add:.2e} eV")
-        print(f"  -> Number of windows:  {n_windows}")
+    print(f" Evaluating the majorant cross section with RECONR stacking algorithm")
+    print(f"err_lim = {err_lim}, err_max = {err_max}, err_int = {err_int}")
+    print(f"last energy to add = {last_energy_to_add} eV")
+    print(f"number of windows = {n_windows}")
     e_next = point_grid[i_grid]
 
     ## err_max (first rough calculation)
@@ -144,9 +143,7 @@ def build_majorant_xs_grid(
     # add the last point
     energy_grid.append(last_energy_to_add)
     cross_section_grid.append(geometry.caculate_mat_majorant_xs(last_energy_to_add))
-    # [CHANGED] Professional progress update, restricted to verbose
-    if geometry.verbose:
-        print("  [RECONR] First pass completed.")
+    print("done")
 
     # RECONR second additional check with errmax
     # avoid to have too many points in high energy thin cross section
@@ -197,37 +194,31 @@ def build_majorant_xs_grid(
 
 
 
-    # [CHANGED] Professional progress update, restricted to verbose
-    if geometry.verbose:
-        print(f"  [RECONR] Second pass completed — {len(energy_grid)} points generated.")
+    print(f"Second pass done — {len(energy_grid)} points")
 
     # ── STEP 3: Deduplicate + window pointers ─────────────────────────────────
+    safety_margin = err_max
     e_arr  = np.array(energy_grid)
-    xs_arr = np.array(cross_section_grid)
+    xs_arr = np.array(cross_section_grid) * (1 + safety_margin)  # add safety margin to the majorant cross section
 
     diffs = np.diff(e_arr)
     
-    # [CHANGED] Reformatted warnings and status updates to be cleaner and verbose-dependent
-    if geometry.verbose:
-        if np.any(diffs <= 0):
-            print(f"  [WARNING] {(diffs <= 0).sum()} inversions found in energy grid before dedup")
-            print(f"  [WARNING] Worst inversion: {diffs[diffs <= 0].min():.6e} eV")
-        else:
-            print("  [RECONR] No inversions found in energy grid before deduplication.")
+    if np.any(diffs <= 0):
+        print(f"WARNING: {(diffs <= 0).sum()} inversions found in energy grid before dedup")
+        print(f"  worst inversion: {diffs[diffs <= 0].min():.6e} eV")
+    else:
+        print("No inversions found in energy grid before dedup")
 
     mask   = np.concatenate(([True], np.diff(e_arr) > 0))
     e_arr  = e_arr[mask]
     xs_arr = xs_arr[mask]
-    # [CHANGED] Formatted output
-    if geometry.verbose:
-        print(f"  [RECONR] Deduplication removed {(~mask).sum()} points.")
+    print(f"Deduplication removed {(~mask).sum()} points")
 
     e_grid_list  = e_arr.tolist()
     xs_grid_list = xs_arr.tolist()
 
     # Build O(1) window pointers
-    # [CHANGED] Standardized log format
-    print("[RECONR] Building O(1) Window Pointers...")
+    print("Building O(1) Window Pointers...")
     window_pointers  = []
     current_window   = 0
 
@@ -243,13 +234,13 @@ def build_majorant_xs_grid(
     
 
     window_pointers.append(len(e_grid_list))
-    # [CHANGED] Cleaned up final output dump to be readable and verbose-only
-    if geometry.verbose:
-        print(f"  [RECONR] Window pointer table: {len(window_pointers) - 1} windows")
-        print(f"  [RECONR] Final grid size:      {len(e_grid_list)} points")
-        print(f"  [RECONR] Energy at first window pointer: {e_grid_list[window_pointers[0]]:.6e} eV")
-        print(f"  [RECONR] First Energy Grid:              {e_grid_list[0]:.6e} eV")
-        print(f"  [RECONR] Energy at last window pointer:  {e_grid_list[window_pointers[-1]-1]:.6e} eV")
-        print(f"  [RECONR] Last Energy Grid:               {e_grid_list[-1]:.6e} eV")
+    print(f"Window pointer table: {len(window_pointers) - 1} windows")
+    print(f"Final grid size:      {len(e_grid_list)} points")
+
+    print("Window Pointers:", window_pointers)
+    print("Energy at first window pointer:", e_grid_list[window_pointers[0]])
+    print("First Energy Grid (eV):", e_grid_list[0])
+    print("Energy at last window pointer:", e_grid_list[window_pointers[-1]-1])
+    print("Last Energy Grid (eV):", e_grid_list[-1])
 
     return e_grid_list, xs_grid_list, np.sqrt(E_min), E_spacing, window_pointers

@@ -115,7 +115,7 @@ class MemoryTracker:
         self._thread.start()
         self.snapshot("init")
         # [CHANGED] Removed leading newline and added professional prefix
-        print(f"[Memory] Tracker started (poll interval: {self._poll_interval*1000:.0f} ms)")
+        print(f"\n [Memory] Tracker started (poll interval: {self._poll_interval*1000:.0f} ms)")
 
     def stop(self):
         """Stop the background polling thread."""
@@ -124,7 +124,7 @@ class MemoryTracker:
             self._thread.join(timeout=2.0)
         self.snapshot("stop")
         # [CHANGED] Removed leading newline and added professional prefix
-        print(f"[Memory] Tracker stopped.")
+        print(f"\n [Memory] Tracker stopped.")
 
     def _poll_loop(self):
         """Runs in background thread — samples RSS continuously."""
