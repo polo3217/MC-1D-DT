@@ -826,7 +826,7 @@ class Geometry:
                 # [FIX] score surface crossing up to the boundary only, not to
                 # the out-of-bounds position — prevents spurious current scores
                 if self.verif_tally_flag and self.verif_tally is not None:
-                    self.verif_tally.score_surface_crossing(x_start, x_boundary)
+                    self.verif_tally.score_surface_crossing(x_start, n.position[0])
                     self.verif_tally.score_leakage(n.position[0])
 
                 # [MODIFIED] Optimization 3: Accumulate track length and flush on leakage

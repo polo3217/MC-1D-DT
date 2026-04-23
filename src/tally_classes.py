@@ -477,7 +477,7 @@ class VerificationTally:
 
     # ------------------------------------------------------------------
     def score_leakage(self, x_end: float):
-        if x_end < self.boundaries[0]:
+        if x_end <= self.boundaries[0]:
             # [CHANGE] was: self._leak_left += 1.0
             self._leak_left.score(1.0)
         elif x_end >= self.boundaries[-1]:
@@ -663,4 +663,9 @@ class VerificationTally:
                   f"  Total           : {self.leak_total:.4e}  ({self.leak_total*100:.2f}%)"]
 
         lines.append("=" * 60)
+
+        # sanitty check 
+        # leakage + absorption equal = 1
+        lines += ["", "  SANITY CHECK: LEAKAGE + ABSORPTION ≈ 1.0",
+                  f"  Leakage + Absorption = {self.leak_total + self.absorption.sum():.4e}"]
         return "\n".join(lines)

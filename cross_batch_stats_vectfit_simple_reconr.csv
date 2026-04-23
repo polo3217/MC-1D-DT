@@ -1,0 +1,40 @@
+tally,region,energy_group,mean,std,relative_error
+flux,all,10-50 eV,0.0,0.0,inf
+flux,all,50-600 eV,13.28048369913908,0.11940633967350463,0.008991113755988064
+flux,all,600-10000 eV,0.0,0.0,inf
+flux,all,10000-1000000 eV,0.0,0.0,inf
+flux,all,1000000-20000000 eV,0.0,0.0,inf
+absorption,0.0-2.0 cm,10-50 eV,0.0,0.0,inf
+absorption,0.0-2.0 cm,50-600 eV,0.09799999999999999,0.003231786571610886,0.03297741399602946
+absorption,0.0-2.0 cm,600-10000 eV,0.0,0.0,inf
+absorption,0.0-2.0 cm,10000-1000000 eV,0.0,0.0,inf
+absorption,0.0-2.0 cm,1000000-20000000 eV,0.0,0.0,inf
+absorption,2.0-15.0 cm,10-50 eV,0.0,0.0,inf
+absorption,2.0-15.0 cm,50-600 eV,0.3846,0.004107445813533167,0.010679786306638501
+absorption,2.0-15.0 cm,600-10000 eV,0.0,0.0,inf
+absorption,2.0-15.0 cm,10000-1000000 eV,0.0,0.0,inf
+absorption,2.0-15.0 cm,1000000-20000000 eV,0.0,0.0,inf
+scatter,0.0-2.0 cm,10-50 eV,0.0,0.0,inf
+scatter,0.0-2.0 cm,50-600 eV,2.3718,0.022111233947174173,0.009322554155988774
+scatter,0.0-2.0 cm,600-10000 eV,0.0,0.0,inf
+scatter,0.0-2.0 cm,10000-1000000 eV,0.0,0.0,inf
+scatter,0.0-2.0 cm,1000000-20000000 eV,0.0,0.0,inf
+scatter,2.0-15.0 cm,10-50 eV,0.0,0.0,inf
+scatter,2.0-15.0 cm,50-600 eV,4.776000000000001,0.05881647539404057,0.012315007410812514
+scatter,2.0-15.0 cm,600-10000 eV,0.0,0.0,inf
+scatter,2.0-15.0 cm,10000-1000000 eV,0.0,0.0,inf
+scatter,2.0-15.0 cm,1000000-20000000 eV,0.0,0.0,inf
+current_forward,x=2.00 cm,all,0.7901,0.005628202791892509,0.007123405634593733
+current_backward,x=2.00 cm,all,0.3853000000000001,0.004198015404132449,0.010895446156585643
+leak_left,boundary,all,0.4972,0.0032276582498427238,0.006491669850850209
+leak_right,boundary,all,0.020199999999999996,0.0014126413400278061,0.06993273960533695
+total_time_s,performance,all,2.8253506996989017,0.1364691052214296,nan
+neutrons_per_second,performance,all,354.6738248916264,16.930902268131774,nan
+rejection_fraction,performance,all,0.2837759160837946,0.05549168836772362,nan
+cpu_efficiency,performance,all,1.0223994934920533,0.010563805027574001,nan
+n_neutrons (total),performance,all,10000,nan,nan
+n_real_collisions (total),performance,all,76304,nan,nan
+n_virtual_collisions (total),performance,all,30711,nan,nan
+wrong_majorant_fraction,performance,all,0.0004164473635257917,0.00021623310969461122,0.51923274976195
+wrong_majorant_mean_error,performance,all,0.0,0.0,inf
+n_wrong_majorant (total),performance,all,34,nan,nan
