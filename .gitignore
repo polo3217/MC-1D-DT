@@ -1,0 +1,37 @@
+# Byte-compiled / cache
+__pycache__/
+*.py[cod]
+
+# Virtual environments
+venv/
+.env/
+
+# Jupyter notebooks checkpoints
+.ipynb_checkpoints/
+
+# Build / output
+build/
+dist/
+*.egg-info/
+
+# Logs
+*.log
+
+# Large data files
+*.h5
+*.hdf5
+*.csv
+*.dat
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDEs
+.vscode/
+.idea/
+
+#large validation data
+validation/data/
+validation/new
+validation/old
