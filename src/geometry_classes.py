@@ -48,17 +48,20 @@ import src.discrete_evaluation as discrete
 import src.reconr_v2 as reconr
 import src.serpent_rothenstein as srp
 import src.parallel as parallel
+import src.sqrtT_E as sqrtT_E
 
 
 global  valid_nuclides_name 
 global  valid_nuclides_list 
 global  xs_dir
+global xs_dir_sqrtT_E
+global xs_dir_vectfit
 
 valid_nuclides_name = [ "U238", "U235", "Pu239","Pu240", "Cnat", "O16", "H1", "Fe56", "Xe135", "Na23" ]    
 valid_nuclides_list = [ '092238', '092235', '094239', '094240', '006000',  '008016', '001001','026056','054135', '011023']
 xs_dir = '/home/paule/open_mc_projects/xs_lib/endfb-vii.1-hdf5/wmp'
-
-
+xs_dir_sqrtT_E = '/home/paule/open_mc_projects/MC-1D_DT/structured_code/src/sqrtT_E_data'
+xs_dir_vectfit = '/home/paule/open_mc_projects/MC-1D_DT/structured_code/src/vectfit_data'
 
 
 # ==========================================
@@ -141,8 +144,12 @@ class Geometry:
         #specific the serpent/rohtenstein majorant method
         self.Q = 0
         self.n_points_per_window = 0
+
+        #used for serpent/rothenstein and for sqrT_E
         self.T_min = 0
         self.T_max = 0
+
+
 
 
         self._materials      = []
@@ -274,13 +281,15 @@ class Geometry:
         if self.memory_tracker_flag:
             self.memory.start()  # Start memory tracking thread
         
-        if method not in ["serpent", "vectfit", "sqrtE_T", "group", "discrete"]:
-            raise ValueError("maj_xs_method must be 'serpent', 'vectfit', 'sqrtE_T', 'group' or 'discrete'")
+        if method not in ["serpent", "vectfit", "sqrtT_E", "group", "discrete"]:
+            raise ValueError("maj_xs_method must be 'serpent', 'vectfit', 'sqrtT_E', 'group' or 'discrete'")
         self._maj_xs_method = method
 
         if method == "vectfit":
             if xs_maj_file_dir is None:
-                raise ValueError("file_dir must be provided when setting maj_xs_method to 'vectfit'")
+                #raise ValueError("file_dir must be provided when setting maj_xs_method to 'vectfit'")
+                xs_maj_file_dir = xs_dir_vectfit
+                print(f"Loading tables from default directory: {xs_maj_file_dir}")
             self.xs_maj_tables = vf.xs_majorant_tables(file_dir=xs_maj_file_dir, verbose=verbose)
 
         if method == "discrete":
@@ -307,8 +316,24 @@ class Geometry:
             self.n_points_per_window = n_points_per_window
 
 
-        if method == "sqrtE_T":
-            raise NotImplementedError("sqrtE_T majorant method not implemented yet")
+        if method == "sqrtT_E":
+            #load the tables
+            if xs_maj_file_dir is None:
+                xs_maj_file_dir = xs_dir_sqrtT_E
+                print("Loading table from default directory:", xs_maj_file_dir)
+                #raise ValueError("file_dir must be provided when setting maj_xs_method to 'sqrtT_E'")
+            self.xs_maj_tables = sqrtT_E.xs_majorant_tables(file_dir=xs_maj_file_dir)
+            if T_bound_method == "user_defined":
+                assert T_bounds is not None, "T_bounds must be provided when T_bound_method is 'user_defined'"
+                self.T_min = T_bounds[0]
+                self.T_max = T_bounds[1]
+            elif T_bound_method == "from_materials":
+                if not self.materials:
+                    raise ValueError("Materials must be defined to determine temperature bounds from materials.")
+                self.T_min = min(mat.T for mat in self.materials)
+                self.T_max = max(mat.T for mat in self.materials)
+            print(f"  [Setup] T Bounds for sqrtT_E set: T_min = {self.T_min} K, T_max = {self.T_max} K")
+            
         if self.memory_tracker_flag:
             self.memory.snapshot("maj_xs_method_setup")
 
@@ -457,8 +482,18 @@ class Geometry:
             maj_table = self.xs_maj_tables[nuclide.name]
             return maj.evaluate_sig_maj(nuclide, energy, maj_table)
         
-        elif self.maj_xs_method == "sqrtE_T":
-            raise NotImplementedError("sqrtE_T majorant method not implemented yet")
+        elif self.maj_xs_method == "sqrtT_E":
+            if self.xs_maj_tables is None:
+                raise ValueError("Majorant tables not loaded. Set maj_xs_method to 'sqrtT_E' and ensure tables are loaded.")
+            if self.xs_maj_tables[nuclide.name] is None:
+                raise ValueError(f"Majorant table for nuclide {nuclide.name} not found. Ensure tables are loaded and contain the nuclide.")
+            maj_table = self.xs_maj_tables[nuclide.name]
+            
+            return sqrtT_E.evaluate_majorant_cross_section(multipole_data= nuclide, 
+                                                           E=energy, 
+                                                           data_table=maj_table, 
+                                                           T_range = (self.T_min, self.T_max))
+           
         
         elif self.maj_xs_method == "serpent":
             return srp.find_majorant_xs_rothenstein(nuclide, energy, T_min=self.T_min, T_max=self.T_max, Q=self.Q, n_points_per_window=self.n_points_per_window)
