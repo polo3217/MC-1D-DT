@@ -32,6 +32,6 @@ Thumbs.db
 .idea/
 
 #large validation data
-validation/data/
-validation/new
-validation/old
+validation/method_validation/data/
+validation/method_validation/new
+validation/method_validation/old

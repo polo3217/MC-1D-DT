@@ -1,0 +1,97 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<tallies>
+  <filter id="204" type="cell">
+    <bins>15 16</bins>
+  </filter>
+  <filter id="164" type="energy">
+    <bins>10.0 600.0</bins>
+  </filter>
+  <filter id="169" type="energyout">
+    <bins>10.0 600.0</bins>
+  </filter>
+  <filter id="170" type="legendre">
+    <order>1</order>
+  </filter>
+  <filter id="208" type="energy">
+    <bins>10 600</bins>
+  </filter>
+  <filter id="210" type="surface">
+    <bins>23</bins>
+  </filter>
+  <filter id="214" type="cellfrom">
+    <bins>15</bins>
+  </filter>
+  <filter id="215" type="cellfrom">
+    <bins>16</bins>
+  </filter>
+  <filter id="211" type="surface">
+    <bins>22</bins>
+  </filter>
+  <filter id="212" type="surface">
+    <bins>24</bins>
+  </filter>
+  <filter id="216" type="mu">
+    <bins>-1.0 -0.8 -0.6 -0.3999999999999999 -0.19999999999999996 0.0 0.20000000000000018 0.40000000000000013 0.6000000000000001 0.8 1.0</bins>
+  </filter>
+  <tally id="201">
+    <filters>204 164</filters>
+    <nuclides>total</nuclides>
+    <scores>flux total absorption</scores>
+    <estimator>tracklength</estimator>
+  </tally>
+  <tally id="202">
+    <filters>204 164</filters>
+    <nuclides>total</nuclides>
+    <scores>flux</scores>
+    <estimator>analog</estimator>
+  </tally>
+  <tally id="195">
+    <filters>204 164 169 170</filters>
+    <nuclides>total</nuclides>
+    <scores>scatter nu-scatter</scores>
+    <estimator>analog</estimator>
+  </tally>
+  <tally id="203">
+    <filters>204 169 170</filters>
+    <nuclides>total</nuclides>
+    <scores>scatter</scores>
+    <estimator>analog</estimator>
+  </tally>
+  <tally id="204" name="flux">
+    <filters>204 208</filters>
+    <scores>flux</scores>
+  </tally>
+  <tally id="205" name="reaction_rates">
+    <filters>204 208</filters>
+    <scores>absorption scatter fission total</scores>
+  </tally>
+  <tally id="206" name="current_net_interface">
+    <filters>210</filters>
+    <scores>current</scores>
+  </tally>
+  <tally id="207" name="current_fwd_interface">
+    <filters>210 214</filters>
+    <scores>current</scores>
+  </tally>
+  <tally id="208" name="current_bwd_interface">
+    <filters>210 215</filters>
+    <scores>current</scores>
+  </tally>
+  <tally id="209" name="spectrum">
+    <filters>204 208</filters>
+    <scores>flux</scores>
+  </tally>
+  <tally id="210" name="leakage_left">
+    <filters>211</filters>
+    <scores>current</scores>
+  </tally>
+  <tally id="211" name="leakage_right">
+    <filters>212</filters>
+    <scores>current</scores>
+  </tally>
+  <tally id="212" name="scattering_angle_lab">
+    <filters>204 216</filters>
+    <scores>scatter</scores>
+    <estimator>analog</estimator>
+  </tally>
+</tallies>

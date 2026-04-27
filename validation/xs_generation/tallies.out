@@ -1,0 +1,193 @@
+ ===========================>     TALLY 201     <===========================
+
+ Cell 15
+   Incoming Energy [10, 600)
+     Total Material
+       Flux                                 4.56834 +/- 0.00445351
+       Total Reaction Rate                  2.4776 +/- 0.00243989
+       Absorption Rate                      0.0924832 +/- 0.000221381
+ Cell 16
+   Incoming Energy [10, 600)
+     Total Material
+       Flux                                 8.78531 +/- 0.0146114
+       Total Reaction Rate                  5.17783 +/- 0.00889277
+       Absorption Rate                      0.385002 +/- 0.000650669
+ ===========================>     TALLY 202     <===========================
+
+ Cell 15
+   Incoming Energy [10, 600)
+     Total Material
+       Flux                                 4.56979 +/- 0.00471228
+ Cell 16
+   Incoming Energy [10, 600)
+     Total Material
+       Flux                                 8.79125 +/- 0.0153211
+ ===========================>     TALLY 195     <===========================
+
+ Cell 15
+   Incoming Energy [10, 600)
+     Outgoing Energy [10, 600)
+       Legendre expansion, P0
+         Total Material
+           Scattering Rate                      2.38561 +/- 0.0025339
+           Scattering Production Rate           2.38561 +/- 0.0025339
+       Legendre expansion, P1
+         Total Material
+           Scattering Rate                      0.00770804 +/- 0.000561856
+           Scattering Production Rate           0.00770804 +/- 0.000561856
+ Cell 16
+   Incoming Energy [10, 600)
+     Outgoing Energy [10, 600)
+       Legendre expansion, P0
+         Total Material
+           Scattering Rate                      4.79616 +/- 0.009097
+           Scattering Production Rate           4.79616 +/- 0.009097
+       Legendre expansion, P1
+         Total Material
+           Scattering Rate                      0.017429 +/- 0.00125471
+           Scattering Production Rate           0.017429 +/- 0.00125471
+ ===========================>     TALLY 203     <===========================
+
+ Cell 15
+   Outgoing Energy [10, 600)
+     Legendre expansion, P0
+       Total Material
+         Scattering Rate                      2.38561 +/- 0.0025339
+     Legendre expansion, P1
+       Total Material
+         Scattering Rate                      0.00770804 +/- 0.000561856
+ Cell 16
+   Outgoing Energy [10, 600)
+     Legendre expansion, P0
+       Total Material
+         Scattering Rate                      4.79616 +/- 0.009097
+     Legendre expansion, P1
+       Total Material
+         Scattering Rate                      0.017429 +/- 0.00125471
+ ========================>     TALLY 204: FLUX     <========================
+
+ Cell 15
+   Incoming Energy [10, 600)
+     Total Material
+       Flux                                 4.56834 +/- 0.00445351
+ Cell 16
+   Incoming Energy [10, 600)
+     Total Material
+       Flux                                 8.78531 +/- 0.0146114
+ ===================>     TALLY 205: REACTION_RATES     <===================
+
+ Cell 15
+   Incoming Energy [10, 600)
+     Total Material
+       Absorption Rate                      0.0924832 +/- 0.000221381
+       Scattering Rate                      2.38512 +/- 0.00238534
+       Fission Rate                         1.14037e-06 +/- 6.4814e-09
+       Total Reaction Rate                  2.4776 +/- 0.00243989
+ Cell 16
+   Incoming Energy [10, 600)
+     Total Material
+       Absorption Rate                      0.385002 +/- 0.000650669
+       Scattering Rate                      4.79283 +/- 0.00838364
+       Fission Rate                         6.024e-06 +/- 1.4546e-08
+       Total Reaction Rate                  5.17783 +/- 0.00889277
+ ===============>     TALLY 206: CURRENT_NET_INTERFACE     <================
+
+ Surface 23
+   Total Material
+     Current                              0.405863 +/- 0.000406343
+ ===============>     TALLY 207: CURRENT_FWD_INTERFACE     <================
+
+ Surface 23
+   Cell from 15
+     Total Material
+       Current                              0.798122 +/- 0.000678565
+ ===============>     TALLY 208: CURRENT_BWD_INTERFACE     <================
+
+ Surface 23
+   Cell from 16
+     Total Material
+       Current                              -0.392259 +/- 0.000764636
+ ======================>     TALLY 209: SPECTRUM     <======================
+
+ Cell 15
+   Incoming Energy [10, 600)
+     Total Material
+       Flux                                 4.56834 +/- 0.00445351
+ Cell 16
+   Incoming Energy [10, 600)
+     Total Material
+       Flux                                 8.78531 +/- 0.0146114
+ ====================>     TALLY 210: LEAKAGE_LEFT     <====================
+
+ Surface 22
+   Total Material
+     Current                              -0.501119 +/- 0.0004089
+ ===================>     TALLY 211: LEAKAGE_RIGHT     <====================
+
+ Surface 24
+   Total Material
+     Current                              0.021562 +/- 0.00016323
+ ================>     TALLY 212: SCATTERING_ANGLE_LAB     <================
+
+ Cell 15
+   Change-in-Angle [-1, -0.8)
+     Total Material
+       Scattering Rate                      0.236819 +/- 0.000359639
+   Change-in-Angle [-0.8, -0.6)
+     Total Material
+       Scattering Rate                      0.236575 +/- 0.000423782
+   Change-in-Angle [-0.6, -0.3999999999999999)
+     Total Material
+       Scattering Rate                      0.236972 +/- 0.000554436
+   Change-in-Angle [-0.3999999999999999, -0.19999999999999996)
+     Total Material
+       Scattering Rate                      0.237376 +/- 0.00051039
+   Change-in-Angle [-0.19999999999999996, 0)
+     Total Material
+       Scattering Rate                      0.238847 +/- 0.000652921
+   Change-in-Angle [0, 0.20000000000000018)
+     Total Material
+       Scattering Rate                      0.238849 +/- 0.000434524
+   Change-in-Angle [0.20000000000000018, 0.40000000000000013)
+     Total Material
+       Scattering Rate                      0.240346 +/- 0.000504356
+   Change-in-Angle [0.40000000000000013, 0.6000000000000001)
+     Total Material
+       Scattering Rate                      0.239959 +/- 0.000428811
+   Change-in-Angle [0.6000000000000001, 0.8)
+     Total Material
+       Scattering Rate                      0.239136 +/- 0.000641054
+   Change-in-Angle [0.8, 1)
+     Total Material
+       Scattering Rate                      0.240727 +/- 0.000496364
+ Cell 16
+   Change-in-Angle [-1, -0.8)
+     Total Material
+       Scattering Rate                      0.475529 +/- 0.00124712
+   Change-in-Angle [-0.8, -0.6)
+     Total Material
+       Scattering Rate                      0.475574 +/- 0.000991147
+   Change-in-Angle [-0.6, -0.3999999999999999)
+     Total Material
+       Scattering Rate                      0.476488 +/- 0.00090654
+   Change-in-Angle [-0.3999999999999999, -0.19999999999999996)
+     Total Material
+       Scattering Rate                      0.478043 +/- 0.0011209
+   Change-in-Angle [-0.19999999999999996, 0)
+     Total Material
+       Scattering Rate                      0.479832 +/- 0.00100617
+   Change-in-Angle [0, 0.20000000000000018)
+     Total Material
+       Scattering Rate                      0.480086 +/- 0.00126956
+   Change-in-Angle [0.20000000000000018, 0.40000000000000013)
+     Total Material
+       Scattering Rate                      0.480621 +/- 0.00122931
+   Change-in-Angle [0.40000000000000013, 0.6000000000000001)
+     Total Material
+       Scattering Rate                      0.481976 +/- 0.00106
+   Change-in-Angle [0.6000000000000001, 0.8)
+     Total Material
+       Scattering Rate                      0.483798 +/- 0.00125299
+   Change-in-Angle [0.8, 1)
+     Total Material
+       Scattering Rate                      0.484212 +/- 0.00122414
