@@ -333,7 +333,7 @@ def evaluate_majorant_cross_section(multipole_data, E, data_table, T_range :Opti
                 evaluate_curve_fit_contribution(multipole_data=multipole_data, E=E, T=T_range[0])
             )
         
-        return maj_xs*1.002
+        return maj_xs*1.02
 
 
 
