@@ -155,7 +155,7 @@ def export_cross_batch_stats(batch_stats, geom,
         print("\n  PERFORMANCE (cross-batch)")
         print(f"  {'Metric':<30} {'Mean':>14} {'±Std':>14}")
         print("  " + "-"*60)
-        for key in ("total_time_s", "neutrons_per_second", "rejection_fraction", "cpu_efficiency"):
+        for key in ("total_time_s", "time_preprocessing_s", "neutrons_per_second", "rejection_fraction", "cpu_efficiency"):
             print(f"  {key:<30} {perf[key]['mean']:>14.4f} {perf[key]['std']:>14.4f}")
         print(f"  {'n_neutrons (total)':<30} {perf['n_neutrons']:>14,}")
         print(f"  {'n_real_collisions (total)':<30} {perf['n_real_collisions']:>14,}")
@@ -240,7 +240,7 @@ def export_cross_batch_stats(batch_stats, geom,
 
         # performance
         perf = batch_stats["perf"]
-        for key in ("total_time_s", "neutrons_per_second", "rejection_fraction", "cpu_efficiency"):
+        for key in ("total_time_s", "time_preprocessing_s", "neutrons_per_second", "rejection_fraction", "cpu_efficiency"):
             cross_rows.append({
                 "tally"          : key,
                 "region"         : "performance",

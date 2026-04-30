@@ -20,8 +20,8 @@ import openmc
 class Neutron:
     def __init__(self, energy=1e6, position=None, direction=None):
         self.energy    = energy
-        self.position  = position.copy()  if position  else [0, 0, 0]
-        self.direction = direction.copy() if direction else [1, 0, 0]
+        self.position  = position.copy()  if position  is not None else np.array([0.0, 0.0, 0.0])
+        self.direction = direction.copy() if direction is not None else np.array([1.0, 0.0, 0.0])
         self.xs        = None
         self.material  = None
 
