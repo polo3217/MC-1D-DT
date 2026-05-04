@@ -1,0 +1,12 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<geometry>
+  <cell id="15" material="5" name="slab1" region="15 -16 18 -19 20 -21" universe="3"/>
+  <cell id="16" material="6" name="slab2" region="16 -17 18 -19 20 -21" universe="3"/>
+  <surface boundary="reflective" coeffs="0.0" id="15" type="x-plane"/>
+  <surface coeffs="2.0" id="16" type="x-plane"/>
+  <surface boundary="reflective" coeffs="15.0" id="17" type="x-plane"/>
+  <surface boundary="reflective" coeffs="-1000.0" id="18" type="y-plane"/>
+  <surface boundary="reflective" coeffs="1000.0" id="19" type="y-plane"/>
+  <surface boundary="reflective" coeffs="-1000.0" id="20" type="z-plane"/>
+  <surface boundary="reflective" coeffs="1000.0" id="21" type="z-plane"/>
+</geometry>

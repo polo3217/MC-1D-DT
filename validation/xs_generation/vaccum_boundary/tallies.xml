@@ -1,96 +1,99 @@
 <?xml version='1.0' encoding='UTF-8'?>
 <tallies>
-  <filter id="204" type="cell">
+  <filter id="42" type="cell">
     <bins>15 16</bins>
   </filter>
-  <filter id="164" type="energy">
+  <filter id="2" type="energy">
     <bins>10.0 600.0</bins>
   </filter>
-  <filter id="169" type="energyout">
+  <filter id="7" type="energyout">
     <bins>10.0 600.0</bins>
   </filter>
-  <filter id="170" type="legendre">
+  <filter id="8" type="legendre">
     <order>1</order>
   </filter>
-  <filter id="208" type="energy">
-    <bins>10 600</bins>
+  <filter id="46" type="energy">
+    <bins>10 50 100 600</bins>
   </filter>
-  <filter id="210" type="surface">
-    <bins>23</bins>
+  <filter id="48" type="surface">
+    <bins>2</bins>
   </filter>
-  <filter id="214" type="cellfrom">
+  <filter id="52" type="cellfrom">
     <bins>15</bins>
   </filter>
-  <filter id="215" type="cellfrom">
+  <filter id="53" type="cellfrom">
     <bins>16</bins>
   </filter>
-  <filter id="211" type="surface">
-    <bins>22</bins>
+  <filter id="47" type="energy">
+    <bins>10 600</bins>
   </filter>
-  <filter id="212" type="surface">
-    <bins>24</bins>
+  <filter id="49" type="surface">
+    <bins>1</bins>
   </filter>
-  <filter id="216" type="mu">
+  <filter id="50" type="surface">
+    <bins>3</bins>
+  </filter>
+  <filter id="54" type="mu">
     <bins>-1.0 -0.8 -0.6 -0.3999999999999999 -0.19999999999999996 0.0 0.20000000000000018 0.40000000000000013 0.6000000000000001 0.8 1.0</bins>
   </filter>
-  <tally id="201">
-    <filters>204 164</filters>
+  <tally id="42">
+    <filters>42 2</filters>
     <nuclides>total</nuclides>
     <scores>flux total absorption</scores>
     <estimator>tracklength</estimator>
   </tally>
-  <tally id="202">
-    <filters>204 164</filters>
+  <tally id="43">
+    <filters>42 2</filters>
     <nuclides>total</nuclides>
     <scores>flux</scores>
     <estimator>analog</estimator>
   </tally>
-  <tally id="195">
-    <filters>204 164 169 170</filters>
+  <tally id="36">
+    <filters>42 2 7 8</filters>
     <nuclides>total</nuclides>
     <scores>scatter nu-scatter</scores>
     <estimator>analog</estimator>
   </tally>
-  <tally id="203">
-    <filters>204 169 170</filters>
+  <tally id="44">
+    <filters>42 7 8</filters>
     <nuclides>total</nuclides>
     <scores>scatter</scores>
     <estimator>analog</estimator>
   </tally>
-  <tally id="204" name="flux">
-    <filters>204 208</filters>
+  <tally id="45" name="flux">
+    <filters>42 46</filters>
     <scores>flux</scores>
   </tally>
-  <tally id="205" name="reaction_rates">
-    <filters>204 208</filters>
+  <tally id="46" name="reaction_rates">
+    <filters>42 46</filters>
     <scores>absorption scatter fission total</scores>
   </tally>
-  <tally id="206" name="current_net_interface">
-    <filters>210</filters>
+  <tally id="47" name="current_net_interface">
+    <filters>48</filters>
     <scores>current</scores>
   </tally>
-  <tally id="207" name="current_fwd_interface">
-    <filters>210 214</filters>
+  <tally id="48" name="current_fwd_interface">
+    <filters>48 52</filters>
     <scores>current</scores>
   </tally>
-  <tally id="208" name="current_bwd_interface">
-    <filters>210 215</filters>
+  <tally id="49" name="current_bwd_interface">
+    <filters>48 53</filters>
     <scores>current</scores>
   </tally>
-  <tally id="209" name="spectrum">
-    <filters>204 208</filters>
+  <tally id="50" name="spectrum">
+    <filters>42 47</filters>
     <scores>flux</scores>
   </tally>
-  <tally id="210" name="leakage_left">
-    <filters>211</filters>
+  <tally id="51" name="leakage_left">
+    <filters>49</filters>
     <scores>current</scores>
   </tally>
-  <tally id="211" name="leakage_right">
-    <filters>212</filters>
+  <tally id="52" name="leakage_right">
+    <filters>50</filters>
     <scores>current</scores>
   </tally>
-  <tally id="212" name="scattering_angle_lab">
-    <filters>204 216</filters>
+  <tally id="53" name="scattering_angle_lab">
+    <filters>42 54</filters>
     <scores>scatter</scores>
     <estimator>analog</estimator>
   </tally>

@@ -11,7 +11,6 @@ Wall time : time.perf_counter()  — real elapsed ("clock on the wall") time.
 
 Both are tracked for every timed region so the dashboard can show
 parallelism efficiency = CPU time / wall time.
-
 """
 import sys
 import os
@@ -20,8 +19,6 @@ import random
 import bisect
 from multiprocessing import Pool
 import functools
-
-
 
 sys.path.append('/home/paule/open_mc_projects/windowed_multipole/02_working_notebook_vectfit')
 
@@ -40,7 +37,6 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import FancyArrowPatch
 
-
 import majorant_multipole as maj
 from src.source_class import Source
 from src.neutron_class import Neutron
@@ -53,7 +49,6 @@ import src.reconr_v2 as reconr
 import src.serpent_rothenstein as srp
 import src.parallel as parallel
 import src.sqrtT_E as sqrtT_E
-
 
 global  valid_nuclides_name 
 global  valid_nuclides_list 
@@ -74,16 +69,12 @@ xs_dir_vectfit = '/home/paule/open_mc_projects/MC-1D_DT/structured_code/src/vect
 class Material:
     def __init__(self, name, nuclides=None, T=293.6):
         self.name     = name
-
-        #nuclides are defined by name and than the multipole library is loaded
         self.nuclides = nuclides if nuclides is not None else []
         for i, pair in enumerate(self.nuclides):
-            # [CHANGED] Clean professional print instead of raw tuple output
             print(f"[Material] Processing nuclide pair: {pair[0]} (Density: {pair[1]:.2e})")
             nuclide_name = pair[0]
             nuclide_density = pair[1]
             
-                
             if nuclide_name not in valid_nuclides_name:
                 raise ValueError(f"Nuclide '{nuclide_name}' not in valid nuclides list.")
             
@@ -118,27 +109,6 @@ class Region:
 # --- Geometry class ---
 # ==========================================
 class Geometry:
-    """
-    Infinite-slab geometry with delta-tracking transport.
-
-    Attributes
-    ----------
-    perf          : PerformanceTracker
-    histories     : list[NeutronHistory]   populated after run_source()
-    majorant_log  : list[MajorantRecord]   one record per majorant evaluation
-    flux_tally    : FluxTallyTLE | None    set by attach_flux_tally()
-    verbose       : bool                   print per-step diagnostics
-
-    --- CHANGES FROM ORIGINAL ---
-    [NEW] batch_results : list — populated by run_batch(); each entry is a dict
-          with keys "flux", "verif", "perf" containing snapshots from that batch.
-
-    [NEW - REFLECTIVE BC] boundary_conditions : dict — controls left/right boundary
-          behaviour. Keys "left" and "right", values "vacuum" or "reflective".
-          Set via set_boundary_conditions(). Default is vacuum on both sides.
-    """
-    
-
     def __init__(self,
                  flux_tally=True,
                  verification_tally=True,
@@ -148,43 +118,29 @@ class Geometry:
                  memory_flag=True, poll_interval : Optional[float] = 0.001,
                  verbose: bool = False):
         
-        self._mode                = "analysis"  # "analysis" or "validation"
-        self._maj_xs_method       = "discrete"      # "vectfit", "sqrtE_T" or "discrete" or "point" or "serpent"
-        self._maj_mat_method      = "simple"     # "simple" or "maj_mat"
-        self._access_method        = "fly"        # "fly" or "reconr" or 
+        self._mode                = "analysis"
+        self._maj_xs_method       = "discrete"
+        self._maj_mat_method      = "simple" 
+        self._access_method       = "fly"    
 
-        #specific for discrete majorant_xs_method
-        self.T_array        = None
-
-        #specific the serpent/rohtenstein majorant method
+        self.T_array = None
         self.Q = 0
         self.n_points_per_window = 0
-
-        #used for serpent/rothenstein and for sqrT_E
         self.T_min = 0
         self.T_max = 0
-
-        # cutoff energy
-        self.cutoff_energy = 1.0e-5  # eV; below this, neutrons are considered absorbed (no transport)
-
-
-
+        self.cutoff_energy = 1.0e-5  
 
         self._materials      = []
         self._nuclides       = {}
-        self.boundaries       = [0.0]  # slab boundaries; regions defined by pairs of boundaries
-        self._regions         = []
+        self.boundaries      = [0.0]  
+        self._regions        = []
         self.material_array  = []
         self.source          = None
         self.verbose         = verbose
 
-        # [NEW - REFLECTIVE BC] Default boundary conditions are vacuum on both sides.
-        # Use set_boundary_conditions() to change them to "reflective".
         self.boundary_conditions = {"left": "vacuum", "right": "vacuum"}
-
         
-        # specific for the maj_mat_method 
-        self.maj_mat  : Material       = None
+        self.maj_mat  : Material = None
         self.xs_maj_tables   = {}
 
         self.reconr_e_grid          = None
@@ -192,10 +148,9 @@ class Geometry:
         self.reconr_sqrt_E_min      = None
         self.reconr_e_spacing       = None
         self.reconr_window_pointers = None
+        self._df_group_xs           = None
 
-        self._df_group_xs    = None
-
-        # Legacy score accumulators
+        # Score accumulators
         self.absorption_score        = 0
         self.scattering_score        = 0
         self.leakage_score           = 0
@@ -204,19 +159,18 @@ class Geometry:
         self.distance_score          = 0
         self.distance_sampling_score = 0
         self.wrong_majorant_score    = 0
-        self.wrong_majorant_error_score   = 0.0
+        self.wrong_majorant_error_score = 0.0
 
-        # Flags to control which features are active
+        # Flags
         self.flux_tally_flag         = flux_tally
         self.verif_tally_flag        = verification_tally
         self.perf_tracker_flag       = perf_tracker
         self.majorant_log_flag       = majorant_log
-        self.history_flag            = history_flag  # always store histories; can be filtered later based on mode or other criteria
-        self.memory_tracker_flag      = memory_flag  # not implemented yet, but placeholder for future memory tracking features
+        self.history_flag            = history_flag
+        self.memory_tracker_flag     = memory_flag
 
-        # Initialise objects (always created; flags control whether they are used)
         self.perf:         PerformanceTracker          = PerformanceTracker()
-        self.memory:       MemoryTracker               = MemoryTracker(poll_interval=poll_interval)  # Initialize memory tracker
+        self.memory:       MemoryTracker               = MemoryTracker(poll_interval=poll_interval)
         
         self.histories:    List[NeutronHistory]        = []
         self._majorant_log: List[MajorantRecord]       = []
@@ -226,7 +180,6 @@ class Geometry:
         self.batch_results: list = []
 
     def reset(self):
-        """Reset all tallies, histories, and performance metrics."""
         self.histories.clear()
         self._majorant_log.clear()
         if self.flux_tally:
@@ -250,17 +203,12 @@ class Geometry:
         self.wrong_majorant_score = 0
         self.wrong_majorant_error_score = 0.0
 
-        
-    # ------------------------------------------------------------------
-    # for multiprocessing run_batch_parallel
     def __getstate__(self):
-        """Called by pickle.dumps — exclude unpicklable objects."""
         state = self.__dict__.copy()
         state['memory'] = None
         return state
 
     def __setstate__(self, state):
-        """Called by pickle.loads in the worker process."""
         self.__dict__.update(state)
         from src.performance_classes import MemoryTracker
         self.memory = MemoryTracker()
@@ -270,16 +218,13 @@ class Geometry:
         return self._mode
     
     def set_mode(self, value: str, filename: str = None):
+        if self.perf_tracker_flag: self.perf.start_preprocessing()
+        if self.memory_tracker_flag: self.memory.start()
         
-        if self.perf_tracker_flag:
-            self.perf.start_preprocessing()
-        if self.memory_tracker_flag:
-            self.memory.start()  # Start memory tracking thread
         if value not in ["analysis", "validation"]:
             raise ValueError("Mode must be 'analysis' or 'validation'")
         if value == "validation":
-            if filename is None:
-                raise ValueError("filename must be provided when setting validation mode")
+            if filename is None: raise ValueError("filename required for validation")
             self._mode = value
             self.set_maj_xs_method("group")
             self.maj_method = "simple"
@@ -287,11 +232,8 @@ class Geometry:
         else:
             self._mode = value
         
-        if self.memory_tracker_flag:
-            self.memory.stop()  # Start memory tracking thread
-
-        if self.perf_tracker_flag:
-            self.perf.stop_preprocessing()
+        if self.memory_tracker_flag: self.memory.stop()
+        if self.perf_tracker_flag: self.perf.stop_preprocessing()
 
     @property 
     def maj_xs_method(self):
@@ -303,74 +245,49 @@ class Geometry:
                           Q: Optional[int] = 2, n_points_per_window: Optional[int] = 100,
                           T_bound_method: Optional[str] = "from_materials", 
                           T_bounds: Optional[List[float]] = None):
-        if self.perf_tracker_flag:
-            self.perf.start_preprocessing()
-
-        if self.memory_tracker_flag:
-            self.memory.start()  # Start memory tracking thread
-            
+        if self.perf_tracker_flag: self.perf.start_preprocessing()
+        if self.memory_tracker_flag: self.memory.start()
         
         if method not in ["serpent", "vectfit", "sqrtT_E", "group", "discrete"]:
-            raise ValueError("maj_xs_method must be 'serpent', 'vectfit', 'sqrtT_E', 'group' or 'discrete'")
+            raise ValueError("Invalid maj_xs_method")
         self._maj_xs_method = method
 
         if method == "vectfit":
-            if xs_maj_file_dir is None:
-                #raise ValueError("file_dir must be provided when setting maj_xs_method to 'vectfit'")
-                xs_maj_file_dir = xs_dir_vectfit
-                print(f"Loading tables from default directory: {xs_maj_file_dir}")
+            xs_maj_file_dir = xs_maj_file_dir or xs_dir_vectfit
+            print(f"Loading tables from default directory: {xs_maj_file_dir}")
             self.xs_maj_tables = vf.xs_majorant_tables(file_dir=xs_maj_file_dir, verbose=verbose)
 
         if method == "discrete":
-            if T_array is None:
-                raise ValueError("T_array must be provided when setting maj_xs_method to 'discrete'")
+            if T_array is None: raise ValueError("T_array required for discrete method")
             self.T_array = T_array
 
         if method == "serpent":
-            # [CHANGED] Professionalized setup prints, detailed info moved to verbose
             if self.verbose:
-                print("  [Warning] Serpent/Rothenstein Temperature majorant method should be used with the reconr access method.")
-            print("[Setup] Setting T bounds for Serpent/Rothenstein majorant method...")
+                print("  [Warning] Serpent/Rothenstein should be used with the reconr access method.")
+            print("[Setup] Setting T bounds for Serpent/Rothenstein...")
             if T_bound_method == "user_defined":
-                assert T_bounds is not None, "T_bounds must be provided when T_bound_method is 'user_defined'"
-                self.T_min = T_bounds[0]
-                self.T_max = T_bounds[1]
+                self.T_min, self.T_max = T_bounds
             elif T_bound_method == "from_materials":
-                if not self.materials:
-                    raise ValueError("Materials must be defined to determine temperature bounds from materials.")
                 self.T_min = min(mat.T for mat in self.materials)
                 self.T_max = max(mat.T for mat in self.materials)
-            print(f"  [Setup] Serpent/Rothenstein T bounds set: T_min = {self.T_min} K, T_max = {self.T_max} K")
+            print(f"  [Setup] Serpent/Rothenstein T bounds set: {self.T_min} K to {self.T_max} K")
             self.Q = Q
             self.n_points_per_window = n_points_per_window
 
-
         if method == "sqrtT_E":
-            #load the tables
-            if xs_maj_file_dir is None:
-                xs_maj_file_dir = xs_dir_sqrtT_E
-                print("Loading table from default directory:", xs_maj_file_dir)
-                #raise ValueError("file_dir must be provided when setting maj_xs_method to 'sqrtT_E'")
+            xs_maj_file_dir = xs_maj_file_dir or xs_dir_sqrtT_E
+            print("Loading table from:", xs_maj_file_dir)
             self.xs_maj_tables = sqrtT_E.xs_majorant_tables(file_dir=xs_maj_file_dir)
             if T_bound_method == "user_defined":
-                assert T_bounds is not None, "T_bounds must be provided when T_bound_method is 'user_defined'"
-                self.T_min = T_bounds[0]
-                self.T_max = T_bounds[1]
+                self.T_min, self.T_max = T_bounds
             elif T_bound_method == "from_materials":
-                if not self.materials:
-                    raise ValueError("Materials must be defined to determine temperature bounds from materials.")
                 self.T_min = min(mat.T for mat in self.materials)
                 self.T_max = max(mat.T for mat in self.materials)
-            print(f"  [Setup] T Bounds for sqrtT_E set: T_min = {self.T_min} K, T_max = {self.T_max} K")
+            print(f"  [Setup] T Bounds for sqrtT_E set: {self.T_min} K to {self.T_max} K")
             
-        if self.memory_tracker_flag:
-            self.memory.snapshot("maj_xs_method_setup")
-
-        if self.memory_tracker_flag:
-            self.memory.stop()  # Start memory tracking thread
-
-        if self.perf_tracker_flag:
-            self.perf.stop_preprocessing()
+        if self.memory_tracker_flag: self.memory.snapshot("maj_xs_method_setup")
+        if self.memory_tracker_flag: self.memory.stop()
+        if self.perf_tracker_flag: self.perf.stop_preprocessing()
         
     @property
     def maj_mat_method(self):
@@ -378,23 +295,16 @@ class Geometry:
 
     @maj_mat_method.setter
     def maj_mat_method(self, value):
-
-        if self.perf_tracker_flag:
-            self.perf.start_preprocessing()
-
-        if self.memory_tracker_flag:
-            self.memory.start()  # Start memory tracking thread
+        if self.perf_tracker_flag: self.perf.start_preprocessing()
+        if self.memory_tracker_flag: self.memory.start()
+        
         self._maj_mat_method = value
         if value == "maj_mat":
-            self.maj_mat    = self.build_majorant_all_material(verbose_maj=True)
-        if self.memory_tracker_flag:
-            self.memory.snapshot("maj_mat_method_setup")
-
-        if self.memory_tracker_flag:
-            self.memory.stop()  # Start memory tracking thread
-
-        if self.perf_tracker_flag:
-            self.perf.stop_preprocessing()
+            self.maj_mat = self.build_majorant_all_material(verbose_maj=True)
+            
+        if self.memory_tracker_flag: self.memory.snapshot("maj_mat_method_setup")
+        if self.memory_tracker_flag: self.memory.stop()
+        if self.perf_tracker_flag: self.perf.stop_preprocessing()
 
     @property
     def access_method(self):
@@ -402,41 +312,23 @@ class Geometry:
     
     def set_access_method(self, value, err_lim=0.001, err_max=0.01, err_int=None,
                         last_window=None, last_energy=None):
-        
+        if self.perf_tracker_flag: self.perf.start_preprocessing()
+        if self.memory_tracker_flag: self.memory.start()
 
-        if self.perf_tracker_flag:
-            self.perf.start_preprocessing()
-        
-        if self.memory_tracker_flag:
-            self.memory.start()  # Start memory tracking thread
-
-        if value not in ["fly", "reconr"]:
-            raise ValueError("access_method must be 'fly' or 'reconr'")
+        if value not in ["fly", "reconr"]: raise ValueError("Invalid access_method")
         self._access_method = value
 
         if value == "reconr":
-            # [CHANGED] Professional print formatting, detailed lists behind verbose
             print("[Setup] Building majorant XS grid for RECONR access method...")
-            if self.verbose:
-                print(f"  -> xs_method:      {self.maj_xs_method}")
-                print(f"  -> maj_mat_method: {self.maj_mat_method}")
-                print(f"  -> materials:      {[mat.name for mat in self.materials]}")
-
             self.reconr_e_grid, self.reconr_maj_xs_grid, self.reconr_sqrt_E_min, self.reconr_e_spacing, self.reconr_window_pointers = reconr.build_majorant_xs_grid(self, err_lim, err_max, err_int, last_window, last_energy)
-        if self.memory_tracker_flag:
-            self.memory.snapshot("access_method_setup")
-
-        if self.memory_tracker_flag:
-            self.memory.stop()  # Start memory tracking thread
-
-        if self.perf_tracker_flag:
-            self.perf.stop_preprocessing()
+        
+        if self.memory_tracker_flag: self.memory.snapshot("access_method_setup")
+        if self.memory_tracker_flag: self.memory.stop()
+        if self.perf_tracker_flag: self.perf.stop_preprocessing()
 
     @property
     def majorant_log(self) -> List[MajorantRecord]:
         return self._majorant_log
-
-    # ------------------------------------------------------------------
 
     @property
     def df_group_xs(self):
@@ -451,589 +343,285 @@ class Geometry:
         return self._materials
     
     def get_region(self, name: str) -> "Region":
-        """Return the Region object with the given name."""
         for r in self._regions:
-            if r.name == name:
-                return r
+            if r.name == name: return r
         raise KeyError(f"[Geometry] No region named '{name}'.")
 
     def get_regions(self) -> list:
-        """Return regions sorted by x_min."""
         return sorted(self._regions, key=lambda r: r.x_min)
     
+    def add_region(self, name: str, material: Material, x_min: float, x_max: float):
+        if x_max <= x_min: raise ValueError(f"x_max ({x_max}) must be > x_min ({x_min})")
+        if any(r.name == name for r in self._regions): raise ValueError(f"Region named '{name}' exists")
 
-    def add_region(self, name: str, material: Material,
-           x_min: float, x_max: float):
-        """
-        Add a named region to the geometry.
-
-        If the new region falls entirely inside an existing region, that region
-        is split automatically to accommodate it. A message is printed when this
-        happens.
-
-        Parameters
-        ----------
-        name     : str       Human-readable label (must be unique).
-        material : Material  Material filling this region.
-        x_min    : float     Left edge of the region [cm].
-        x_max    : float     Right edge of the region [cm].
-        """
-        if x_max <= x_min:
-            raise ValueError(
-                f"[Geometry] Region '{name}': x_max ({x_max}) must be > x_min ({x_min})."
-            )
-        if any(r.name == name for r in self._regions):
-            raise ValueError(
-                f"[Geometry] A region named '{name}' already exists."
-            )
-
-        # ── Auto-split: check if the new region sits inside an existing one ──
+        # Auto-split check
         for existing in self._regions:
             if existing.x_min < x_min and existing.x_max > x_max:
-                # New region is fully contained — split the host region in two
-                left_region  = Region(name=f"{existing.name}_left",
-                                    material=existing.material,
-                                    x_min=existing.x_min,
-                                    x_max=x_min)
-                right_region = Region(name=f"{existing.name}_right",
-                                    material=existing.material,
-                                    x_min=x_max,
-                                    x_max=existing.x_max)
-                print(
-                    f"[Geometry] Region '{existing.name}' "
-                    f"[{existing.x_min:.4g}, {existing.x_max:.4g}] cm "
-                    f"split to accommodate '{name}' "
-                    f"[{x_min:.4g}, {x_max:.4g}] cm:\n"
-                    f"  -> '{left_region.name}'  [{left_region.x_min:.4g},  {left_region.x_max:.4g}] cm\n"
-                    f"  -> '{right_region.name}' [{right_region.x_min:.4g}, {right_region.x_max:.4g}] cm"
-                )
+                left_region  = Region(name=f"{existing.name}_left", material=existing.material, x_min=existing.x_min, x_max=x_min)
+                right_region = Region(name=f"{existing.name}_right", material=existing.material, x_min=x_max, x_max=existing.x_max)
                 self._regions.remove(existing)
                 self._regions.extend([left_region, right_region])
-                break   # only one region can fully contain the new one
+                break
 
-        self._regions.append(Region(name=name, material=material,
-                                    x_min=x_min, x_max=x_max))
-
-    
+        self._regions.append(Region(name=name, material=material, x_min=x_min, x_max=x_max))
         self._rebuild_boundaries()
         self.rebuild_materials()
         self.rebuild_nuclides()
         self._validate_no_gaps_or_overlaps()
-        
 
     def rebuild_materials(self):
-        """
-        Synchronize the flat material_array with the current list of regions.
-        Must be called whenever regions are added, removed, or split.
-        """
         if not self._regions:
             self.material_array = []
             self._materials = []
             return
-
-        # Sort regions by x_min to ensure the array index matches the boundary index
         sorted_regions = sorted(self._regions, key=lambda r: r.x_min)
-        
-        # Update the material_array used in _get_material_at
         self.material_array = [r.material for r in sorted_regions]
-        
-        # Update the unique materials list
         unique_mats = []
         for r in sorted_regions:
-            if r.material not in unique_mats:
-                unique_mats.append(r.material)
+            if r.material not in unique_mats: unique_mats.append(r.material)
         self._materials = unique_mats
 
-        if self.verbose:
-            print(f"[Geometry] Material array rebuilt ({len(self.material_array)} regions).")
-
     def rebuild_nuclides(self):
-        """
-        Scan all materials currently in the geometry and update the 
-        global dictionary of unique nuclides.
-        """
         self._nuclides = {}
         for mat in self.materials:
             for nuclide_obj, density in mat.nuclides:
-                n_name = nuclide_obj.name
-                if n_name not in self._nuclides:
-                    # Store a reference to the nuclide object and its density
-                    self._nuclides[n_name] = (nuclide_obj, density)
-        
-        if self.verbose:
-            print(f"[Geometry] Nuclide dictionary rebuilt ({len(self._nuclides)} unique nuclides found).")
+                if nuclide_obj.name not in self._nuclides:
+                    self._nuclides[nuclide_obj.name] = (nuclide_obj, density)
 
     def _rebuild_boundaries(self):
-        """
-        Rebuild self.boundaries and self.material_array from self._regions.
-
-        These two flat structures are the ones used by the hot-path lookup
-        (_get_material_at via bisect) and must always be kept in sync with
-        the region list.
-
-        Layout (N regions → N+1 boundaries, N materials):
-
-            boundaries :  [x0, x1, x2, ..., xN]
-            material_array: [mat0, mat1, ..., mat(N-1)]
-
-            region i occupies [boundaries[i], boundaries[i+1])
-            material_array[i] is the material for region i
-        """
         if not self._regions:
-            self.boundaries    = [0.0]
+            self.boundaries = [0.0]
             self.material_array = []
             return
-
-        # Sort regions by left edge — allows add_region() to be called in any order
         sorted_regions = sorted(self._regions, key=lambda r: r.x_min)
-
-
-        # ── Build flat structures ───────────────────────────────────────────
-        self.boundaries     = [sorted_regions[0].x_min] + [r.x_max for r in sorted_regions]
+        self.boundaries = [sorted_regions[0].x_min] + [r.x_max for r in sorted_regions]
         self.material_array = [r.material for r in sorted_regions]
-
-        if self.verbose:
-            print(f"[Geometry] Boundaries rebuilt: {self.boundaries}")
-            for i, r in enumerate(sorted_regions):
-                print(
-                    f"  Region {i:>2}: '{r.name}' | "
-                    f"[{r.x_min:.4g}, {r.x_max:.4g}] cm | "
-                    f"mat: '{r.material.name}'"
-                )
     
     def _validate_no_gaps_or_overlaps(self):
         sorted_regions = sorted(self._regions, key=lambda r: r.x_min)
         for i in range(1, len(sorted_regions)):
             prev, curr = sorted_regions[i-1], sorted_regions[i]
-            if curr.x_min < prev.x_max:
-                raise ValueError(f"Regions '{prev.name}' and '{curr.name}' overlap.")
-            if curr.x_min > prev.x_max:
-                raise ValueError(f"Gap between regions '{prev.name}' and '{curr.name}'.")
+            if curr.x_min < prev.x_max: raise ValueError(f"Overlap: '{prev.name}' & '{curr.name}'")
+            if curr.x_min > prev.x_max: raise ValueError(f"Gap: '{prev.name}' & '{curr.name}'")
 
     def add_material(self, mat: Material):
-        if self.memory_tracker_flag:
-            self.memory.start()
-        if any(m.name == mat.name for m in self._materials):
-            raise ValueError(f"Material with name '{mat.name}' already exists.")
+        if self.memory_tracker_flag: self.memory.start()
+        if any(m.name == mat.name for m in self._materials): raise ValueError("Material exists")
+        
         self._materials.append(mat)
         for nuclide in mat.nuclides:
-            # [CHANGED] Clean professional print, tied to verbose flag
-            if self.verbose:
-                print(f"  [Material] Loaded nuclide: {nuclide[0].name}")
             if nuclide[0].name not in self._nuclides:
                 self._nuclides[nuclide[0].name] = nuclide
-
+                
         if self.memory_tracker_flag:
             self.memory.snapshot(f"add_material_{mat.name}")
             self.memory.stop()
-            
+
     @property
     def nuclides(self):
         return self._nuclides
 
-
     def draw(self, figsize: tuple = (12, 4), show_material_legend: bool = True):
-            """
-            Draw a 1-D cross-section of the geometry using matplotlib.
+        if not self._regions:
+            print("[Geometry] No regions to draw.")
+            return None, None
 
-            Each region is rendered as a labelled rectangle coloured by material.
-            Boundary conditions are annotated on the left and right edges.
+        sorted_regions = sorted(self._regions, key=lambda r: r.x_min)
+        total_width = sorted_regions[-1].x_max - sorted_regions[0].x_min
+        unique_materials = list({r.material.name: r.material for r in sorted_regions}.keys())
+        colour_cycle = plt.cm.tab10.colors
+        mat_colours = {name: colour_cycle[i % len(colour_cycle)] for i, name in enumerate(unique_materials)}
 
-            Parameters
-            ----------
-            figsize            : tuple   Figure size passed to matplotlib.
-            show_material_legend : bool  Whether to show a material legend.
+        fig, ax = plt.subplots(figsize=figsize)
+        ax.set_xlim(sorted_regions[0].x_min - 0.05 * total_width, sorted_regions[-1].x_max + 0.05 * total_width)
+        ax.set_ylim(0, 1)
+        ax.set_yticks([])
+        ax.set_xlabel("x  [cm]", fontsize=11)
+        ax.set_title("Geometry cross-section", fontsize=12, pad=10)
 
-            Returns
-            -------
-            fig, ax : matplotlib Figure and Axes objects.
-            """
+        for r in sorted_regions:
+            colour = mat_colours[r.material.name]
+            width = r.x_max - r.x_min
+            rect = mpatches.FancyBboxPatch((r.x_min, 0.05), width, 0.90, boxstyle="square,pad=0",
+                                           facecolor=colour, edgecolor="black", linewidth=0.8, alpha=0.55)
+            ax.add_patch(rect)
+            cx = r.x_min + width / 2
+            ax.text(cx, 0.72, r.name, ha="center", va="center", fontsize=9, fontweight="bold", color="black")
+            ax.text(cx, 0.38, r.material.name, ha="center", va="center", fontsize=8, color="black", style="italic")
+            ax.text(cx, 0.20, f"T = {r.material.T:.0f} K", ha="center", va="center", fontsize=7.5, color="#444444")
+            for xb in (r.x_min, r.x_max):
+                ax.axvline(xb, color="black", linewidth=0.6, linestyle="--", alpha=0.4)
 
+        _bc_symbol = {"vacuum": "✕  vacuum", "reflective": "↔  reflective"}
+        for side, xpos, ha in (("left", sorted_regions[0].x_min, "right"), ("right", sorted_regions[-1].x_max, "left")):
+            bc = self.boundary_conditions[side]
+            xoff = -0.01 * total_width if side == "left" else 0.01 * total_width
+            ax.text(xpos + xoff, 0.50, _bc_symbol[bc], ha=ha, va="center", fontsize=8,
+                    color="#c0392b" if bc == "vacuum" else "#2980b9", fontweight="bold")
 
-            if not self._regions:
-                print("[Geometry] No regions to draw.")
-                return None, None
+        if show_material_legend:
+            legend_handles = [mpatches.Patch(facecolor=mat_colours[name], edgecolor="black",
+                              linewidth=0.6, alpha=0.7, label=name) for name in unique_materials]
+            ax.legend(handles=legend_handles, loc="upper right", fontsize=8, framealpha=0.7, title="Materials", title_fontsize=8)
 
-            sorted_regions = sorted(self._regions, key=lambda r: r.x_min)
-            total_width    = sorted_regions[-1].x_max - sorted_regions[0].x_min
+        ax.spines[["top", "left", "right"]].set_visible(False)
+        fig.tight_layout()
+        plt.show()
+        return fig, ax
 
-            # ── Assign a colour per unique material ──────────────────────────
-            unique_materials = list({r.material.name: r.material
-                                    for r in sorted_regions}.keys())
-            colour_cycle = plt.cm.tab10.colors
-            mat_colours  = {name: colour_cycle[i % len(colour_cycle)]
-                            for i, name in enumerate(unique_materials)}
-
-            fig, ax = plt.subplots(figsize=figsize)
-            ax.set_xlim(sorted_regions[0].x_min - 0.05 * total_width,
-                        sorted_regions[-1].x_max + 0.05 * total_width)
-            ax.set_ylim(0, 1)
-            ax.set_yticks([])
-            ax.set_xlabel("x  [cm]", fontsize=11)
-            ax.set_title("Geometry cross-section", fontsize=12, pad=10)
-
-            for r in sorted_regions:
-                colour = mat_colours[r.material.name]
-                width  = r.x_max - r.x_min
-
-                # filled rectangle
-                rect = mpatches.FancyBboxPatch(
-                    (r.x_min, 0.05), width, 0.90,
-                    boxstyle="square,pad=0",
-                    facecolor=colour, edgecolor="black",
-                    linewidth=0.8, alpha=0.55,
-                )
-                ax.add_patch(rect)
-
-                # region name (top) and material name (bottom)
-                cx = r.x_min + width / 2
-                ax.text(cx, 0.72, r.name,
-                        ha="center", va="center", fontsize=9,
-                        fontweight="bold", color="black")
-                ax.text(cx, 0.38, r.material.name,
-                        ha="center", va="center", fontsize=8,
-                        color="black", style="italic")
-                ax.text(cx, 0.20, f"T = {r.material.T:.0f} K",
-                        ha="center", va="center", fontsize=7.5,
-                        color="#444444")
-
-                # dashed boundary ticks
-                for xb in (r.x_min, r.x_max):
-                    ax.axvline(xb, color="black", linewidth=0.6,
-                            linestyle="--", alpha=0.4)
-
-            # ── Boundary condition annotations ───────────────────────────────
-            _bc_symbol = {"vacuum": "✕  vacuum", "reflective": "↔  reflective"}
-
-            for side, xpos, ha in (
-                ("left",  sorted_regions[0].x_min,  "right"),
-                ("right", sorted_regions[-1].x_max, "left"),
-            ):
-                bc   = self.boundary_conditions[side]
-                xoff = -0.01 * total_width if side == "left" else 0.01 * total_width
-                ax.text(xpos + xoff, 0.50, _bc_symbol[bc],
-                        ha=ha, va="center", fontsize=8,
-                        color="#c0392b" if bc == "vacuum" else "#2980b9",
-                        fontweight="bold")
-
-            # ── Material legend ───────────────────────────────────────────────
-            if show_material_legend:
-                legend_handles = [
-                    mpatches.Patch(facecolor=mat_colours[name], edgecolor="black",
-                                linewidth=0.6, alpha=0.7, label=name)
-                    for name in unique_materials
-                ]
-                ax.legend(handles=legend_handles, loc="upper right",
-                        fontsize=8, framealpha=0.7, title="Materials",
-                        title_fontsize=8)
-
-            ax.spines[["top", "left", "right"]].set_visible(False)
-            fig.tight_layout()
-            plt.show()
-            return fig, ax
-    
-
-    ## Set cutoff energy for transport (neutrons below this energy are considered absorbed)
     def set_cutoff_energy(self, energy: float):
-        if energy <= 0:
-            raise ValueError("Cutoff energy must be positive.")
+        if energy <= 0: raise ValueError("Cutoff energy must be positive.")
         self.cutoff_energy = energy
         print(f"[Setup] Cutoff energy set to {self.cutoff_energy:.2e} eV")
-    # ------------------------------------------------------------------
-    #  Majorant helper methods
 
     def build_majorant_all_material(self, verbose_maj: bool = False) -> Material:
-        # collect max density per nuclide across all materials
-        nuclides = {}   # {name: (nuclide_obj, max_density)}
+        nuclides = {}
         for mat in self.materials:
             for nuclide_obj, density in mat.nuclides:
-                if verbose_maj:
-                    print(f"Material: {mat.name:12s} | "
-                        f"Nuclide: {nuclide_obj.name:10s} | "
-                        f"Density: {density*1e24:.4e} atoms/cm³")
                 if nuclide_obj.name not in nuclides:
                     nuclides[nuclide_obj.name] = (nuclide_obj, density)
                 else:
                     _, existing_density = nuclides[nuclide_obj.name]
-                    nuclides[nuclide_obj.name] = (nuclide_obj,
-                                                max(existing_density, density))
-
-        if verbose_maj:
-            print("Majorant material composition:")
-            for name, (_, density) in nuclides.items():
-                print(f"  {name:10s} : {density*1e24:.4e} atoms/cm³")
-
-        # build the Material object bypassing __init__ loading logic
-        mat_maj       = object.__new__(Material)
-        mat_maj.name  = "maj_mat"
-        mat_maj.xs    = None
-        mat_maj.nuclides = [(nuclide_obj, density)
-                            for nuclide_obj, density in nuclides.values()]
+                    nuclides[nuclide_obj.name] = (nuclide_obj, max(existing_density, density))
+        
+        mat_maj = object.__new__(Material)
+        mat_maj.name = "maj_mat"
+        mat_maj.xs = None
+        mat_maj.nuclides = [(nuclide_obj, density) for nuclide_obj, density in nuclides.values()]
         mat_maj.total_density = float(sum(d for _, d in mat_maj.nuclides))
-
         return mat_maj
 
-    # ------------------------------------------------------------------
-    def attach_flux_tally(self, energy_bins: List[float],
-                          transverse_area: float = 1.0):
-        self.flux_tally = FluxTallyTLE(self.boundaries, energy_bins,
-                                       transverse_area)
+    def attach_flux_tally(self, energy_bins: List[float], transverse_area: float = 1.0):
+        self.flux_tally = FluxTallyTLE(self.boundaries, energy_bins, transverse_area)
 
-    # ------------------------------------------------------------------
-    def attach_verification_tally(self, energy_bins: List[float],
-                                  surface_xs: List[float]):
-        self.verif_tally = VerificationTally(
-            self.boundaries, energy_bins, surface_xs
-        )
+    def attach_verification_tally(self, energy_bins: List[float], surface_xs: List[float]):
+        self.verif_tally = VerificationTally(self.boundaries, energy_bins, surface_xs)
 
-
-
-    # [NEW - REFLECTIVE BC] -----------------------------------------------
     def set_boundary_conditions(self, left: str = "vacuum", right: str = "vacuum"):
-        """
-        Set boundary conditions for the left and right slab boundaries.
-
-        Parameters
-        ----------
-        left  : str  "vacuum" (default) or "reflective"
-        right : str  "vacuum" (default) or "reflective"
-
-        In vacuum mode the neutron is terminated and tallied as a leakage event
-        (original behaviour, unchanged).
-
-        In reflective mode the neutron's x-direction component is negated at the
-        boundary and transport continues.  The sampled free-path length is
-        conserved: the neutron travels the remaining overshoot distance inward
-        after the fold, so there is no bias introduced into the path-length
-        sampling.
-        """
         valid = {"vacuum", "reflective"}
-        if left not in valid or right not in valid:
-            raise ValueError(
-                f"Boundary condition must be one of {valid}. "
-                f"Got left='{left}', right='{right}'."
-            )
+        if left not in valid or right not in valid: raise ValueError("Invalid Boundary Condition")
         self.boundary_conditions["left"]  = left
         self.boundary_conditions["right"] = right
         print(f"[Setup] Boundary conditions set: left='{left}', right='{right}'")
-    # [END NEW - REFLECTIVE BC] -------------------------------------------
 
-    # ------------------------------------------------------------------
-    def calculate_nuclide_majorant_xs(self, energy: float, nuclide, temperature= None)-> float:
+    def calculate_nuclide_majorant_xs(self, energy: float, nuclide, temperature=None) -> float:
         if self.maj_xs_method == "vectfit":
-            if self.xs_maj_tables is None:
-                raise ValueError("Majorant tables not loaded. Set maj_xs_method to 'vectfit' and ensure tables are loaded.")
-            if self.xs_maj_tables[nuclide.name] is None:
-                raise ValueError(f"Majorant table for nuclide {nuclide.name} not found. Ensure tables are loaded and contain the nuclide.")
-            
             maj_table = self.xs_maj_tables[nuclide.name]
             return maj.evaluate_sig_maj(nuclide, energy, maj_table)
-        
         elif self.maj_xs_method == "sqrtT_E":
-            if self.xs_maj_tables is None:
-                raise ValueError("Majorant tables not loaded. Set maj_xs_method to 'sqrtT_E' and ensure tables are loaded.")
-            if self.xs_maj_tables[nuclide.name] is None:
-                raise ValueError(f"Majorant table for nuclide {nuclide.name} not found. Ensure tables are loaded and contain the nuclide.")
             maj_table = self.xs_maj_tables[nuclide.name]
-            
-            return sqrtT_E.evaluate_majorant_cross_section(multipole_data= nuclide, 
-                                                           E=energy, 
-                                                           data_table=maj_table, 
-                                                           T_range = (self.T_min, self.T_max))
-           
-        
+            return sqrtT_E.evaluate_majorant_cross_section(multipole_data=nuclide, E=energy, data_table=maj_table, T_range=(self.T_min, self.T_max))
         elif self.maj_xs_method == "serpent":
             return srp.find_majorant_xs_rothenstein(nuclide, energy, T_min=self.T_min, T_max=self.T_max, Q=self.Q, n_points_per_window=self.n_points_per_window)
-        
         elif self.maj_xs_method == "discrete":
-            if self.maj_mat_method == "maj_mat":
-                raise ValueError ("Discrete majorant method is not compatile with the maj_mat method -- There is no way to know the temperature at wich to evaluate the majorant.")
-            if self.T_array is None:
-                raise ValueError("T_array must be provided for discrete majorant method")
             return discrete.discrete_majorant(energy, T_eval=temperature, T_array=self.T_array, nuclide=nuclide)
+        return 0.0
 
-        return
-    
     def caculate_mat_majorant_xs(self, energy: float) -> float:
-        ## Case maj_mat = simply caculate a majorant material and evaluate it.
         if self.maj_mat_method == "maj_mat":
-            assert self.maj_mat.name == "maj_mat", "maj_mat method requires a majorant material to be defined and set as maj_mat"
             majorant_xs = 0.0
-            
             for nuclide_obj, density in self.maj_mat.nuclides:
-                maj_xs_nuclide = self.calculate_nuclide_majorant_xs(energy, nuclide_obj)
-                majorant_xs += density * maj_xs_nuclide
-
-        ## Case simple : iterate through each material and select the maximum majorant xs
+                majorant_xs += density * self.calculate_nuclide_majorant_xs(energy, nuclide_obj)
         elif self.maj_mat_method == "simple":
             majorant_xs = 0.0
             for mat in self.materials:
                 mat_majorant_xs = 0.0
                 for nuclide_obj, density in mat.nuclides:
-                    maj_xs_nuclide = self.calculate_nuclide_majorant_xs(energy, nuclide_obj, mat.T)
-                    mat_majorant_xs += density * maj_xs_nuclide
-                if mat_majorant_xs > majorant_xs:
-                    majorant_xs = mat_majorant_xs
-        
+                    mat_majorant_xs += density * self.calculate_nuclide_majorant_xs(energy, nuclide_obj, mat.T)
+                if mat_majorant_xs > majorant_xs: majorant_xs = mat_majorant_xs
         return majorant_xs
-    
+
     def access_majorant_xs(self, energy: float) -> float:
         if self.access_method == "fly":
             return self.caculate_mat_majorant_xs(energy)
-        
         elif self.access_method == "reconr":
-            if energy <= self.reconr_e_grid[0]:
-                return self.reconr_maj_xs_grid[0]
-            if energy >= self.reconr_e_grid[-1]:
-                return self.reconr_maj_xs_grid[-1]
-
-            # O(1) window identification
+            if energy <= self.reconr_e_grid[0]: return self.reconr_maj_xs_grid[0]
+            if energy >= self.reconr_e_grid[-1]: return self.reconr_maj_xs_grid[-1]
             w = int((math.sqrt(energy) - self.reconr_sqrt_E_min) / self.reconr_e_spacing)
-            
-
             lo = self.reconr_window_pointers[w]
             hi = self.reconr_window_pointers[w + 1]
-            
-            # Bisect within window slice — no list copy
             i = bisect.bisect_right(self.reconr_e_grid, energy, lo, hi)
-        
-            
-
-            E1  = self.reconr_e_grid[i - 1]
-            E2  = self.reconr_e_grid[i]
-            xs1 = self.reconr_maj_xs_grid[i - 1]
-            xs2 = self.reconr_maj_xs_grid[i]
-
-            
-            xs = xs1 + (xs2 - xs1) * (energy - E1) / (E2 - E1)
-            
-            return xs
+            E1, E2 = self.reconr_e_grid[i - 1], self.reconr_e_grid[i]
+            xs1, xs2 = self.reconr_maj_xs_grid[i - 1], self.reconr_maj_xs_grid[i]
+            return xs1 + (xs2 - xs1) * (energy - E1) / (E2 - E1)
 
     def get_majorant_xs(self, energy: float) -> float:
-
         if self.perf_tracker_flag:
             wall_t0 = time.perf_counter()
             cpu_t0  = time.process_time()
 
         if self.mode == "validation":
-            actual_max_xs     = 0.0
+            actual_max_xs = 0.0
             limiting_mat_name = ""
-            if self.df_group_xs is None:
-                raise ValueError("...")
             for cell in self.df_group_xs['cell'].unique():
                 cell_df = self.df_group_xs[self.df_group_xs['cell'] == cell]
                 total = cell_df['scatter'].sum() + cell_df['absorption'].sum()
                 if total > actual_max_xs:
-                    actual_max_xs     = total
+                    actual_max_xs = total
                     limiting_mat_name = f"Cell {cell}"
             majorant_xs = 2.0 * actual_max_xs
-
         else:
             majorant_xs = self.access_majorant_xs(energy)
             if self.majorant_log_flag:
-                actual_max_xs     = 0.0
+                actual_max_xs = 0.0
                 limiting_mat_name = ""
                 for mat in self.materials:
                     xs_arr = mat._xs_evaluation(energy)
                     total  = float(xs_arr[0] + xs_arr[1])
                     if total > actual_max_xs:
-                        actual_max_xs     = total
+                        actual_max_xs = total
                         limiting_mat_name = mat.name
 
-        # shared bookkeeping for both modes
         if self.majorant_log_flag:
-            self._majorant_log.append(MajorantRecord(
-                energy=energy,
-                value=majorant_xs,
-                limiting_material=limiting_mat_name,
-                actual_max_xs=actual_max_xs,
-            ))
+            self._majorant_log.append(MajorantRecord(energy=energy, value=majorant_xs, limiting_material=limiting_mat_name, actual_max_xs=actual_max_xs))
 
         if self.perf_tracker_flag:
-            wall_elapsed = time.perf_counter() - wall_t0
-            cpu_elapsed  = time.process_time()  - cpu_t0
-            self.perf.n_majorant_updates  += 1
-            self.perf.time_majorant       += wall_elapsed
-            self.perf.cpu_time_majorant   += cpu_elapsed
+            self.perf.n_majorant_updates += 1
+            self.perf.time_majorant += time.perf_counter() - wall_t0
+            self.perf.cpu_time_majorant += time.process_time() - cpu_t0
         
         return majorant_xs
 
-    # ------------------------------------------------------------------
     def _sample_neutron_distance(self, majorant_xs: float) -> float:
-        if majorant_xs is None or majorant_xs <= 0:
-            print(f"Error: Invalid majorant_xs value: {majorant_xs}")
-            raise ValueError("Majorant cross section must be positive")
-        # [MODIFIED] Scalar Optimization: Avoid numpy scalar dispatch overhead
         return -math.log(random.random()) / majorant_xs
 
-    # ------------------------------------------------------------------
     def _move_neutron(self, n: Neutron, distance: float):
-        # [MODIFIED] Scalar Optimization: Unrolled loop to avoid Python 'for' overhead
         n.position[0] += n.direction[0] * distance
         n.position[1] += n.direction[1] * distance
         n.position[2] += n.direction[2] * distance
 
-    # ------------------------------------------------------------------
     def _get_material_at(self, x: float) -> Optional[Material]:
-        # Optimized boundary check
-        if x < self.boundaries[0] or x > self.boundaries[-1]:
-            return None
+        if x < self.boundaries[0] or x >= self.boundaries[-1]: return None
         idx = bisect.bisect_right(self.boundaries, x) - 1
         return self.material_array[idx]
 
-    # ------------------------------------------------------------------
     def _evaluate_acceptance(self, n: Neutron, majorant_xs: float) -> bool:
-        if majorant_xs is None:
-            raise ValueError("Majorant cross section is not defined")
-
         mat = self._get_material_at(n.position[0])
-
-        if mat is None:
-            return False
+        if mat is None: return False
         
         if self.mode == "analysis":
-
             wall_t0 = time.perf_counter()
             cpu_t0  = time.process_time()
 
-            # [MODIFIED] Optimization 1: Virtual Collision Caching Loop
-            # Instead of re-evaluating the WMP Faddeeva function on every step,
-            # we check if the neutron's energy and material are unchanged since the last evaluation.
             if n.energy == n.last_eval_energy and mat == n.last_eval_mat:
                 n.xs = n.last_eval_xs
             else:
                 n.xs = mat._xs_evaluation(n.energy)
-                # Cache the results for the next virtual collision
                 n.last_eval_energy = n.energy
                 n.last_eval_mat = mat
                 n.last_eval_xs = n.xs
 
-            wall_elapsed = time.perf_counter() - wall_t0
-            cpu_elapsed  = time.process_time()  - cpu_t0
-
-            self.perf.time_xs_eval     += wall_elapsed
-            self.perf.cpu_time_xs_eval += cpu_elapsed
+            self.perf.time_xs_eval += time.perf_counter() - wall_t0
+            self.perf.cpu_time_xs_eval += time.process_time() - cpu_t0
             self.perf.n_xs_evaluations += 1
 
-            local_xs        = float(n.xs[0] + n.xs[1])
+            local_xs = float(n.xs[0] + n.xs[1])
             acceptance_prob = local_xs / majorant_xs
             if acceptance_prob > 1.0:
-                #print(f"Warning: Acceptance probability > 1.0 ({(acceptance_prob-1.0):.4e}). ")
-                
                 self.wrong_majorant_score += 1
                 self.wrong_majorant_error_score += acceptance_prob - 1.0
                 acceptance_prob = 1.0
 
-            if self.verbose:
-                # [CHANGED] Adjusted trace for cleaner alignment
-                print(
-                    f"  [Trace] Mat: {mat.name:12s} | "
-                    f"local_xs: {local_xs:.4f} | "
-                    f"majorant: {majorant_xs:.4f} | "
-                    f"ratio: {acceptance_prob:.4f}"
-                )
-
-            # [MODIFIED] Scalar Optimization: Replace np.random.uniform() with random.random()
             if random.random() < acceptance_prob:
                 n.material = mat
                 return True
@@ -1042,63 +630,36 @@ class Geometry:
         elif self.mode == "validation":
             wall_t0 = time.perf_counter()
             cpu_t0  = time.process_time()
-            if self.df_group_xs is None:
-                raise ValueError("Group-wise XS data frame not set. Set df_group_xs before using 'group' method.")
-            if mat.name == "cell 1":
-                mat_name = 15
-            elif mat.name == "cell 2":
-                mat_name = 16
-            else:
-                raise ValueError(f"Unexpected material name: {mat.name}. Expected 'cell 1' or 'cell 2' for group-wise evaluation.")
 
+            mat_name = 15 if mat.name == "cell 1" else 16
             cell_df = self.df_group_xs[self.df_group_xs['cell'] == mat_name]
             scatter_xs = cell_df['scatter'].sum()
             absorption_xs = cell_df['absorption'].sum()
             fission_xs = cell_df['fission'].sum() if 'fission' in cell_df.columns else 0.0
             n.xs = np.array([scatter_xs, absorption_xs, fission_xs])
 
-            wall_elapsed = time.perf_counter() - wall_t0
-            cpu_elapsed  = time.process_time()  - cpu_t0
-
-            self.perf.time_xs_eval     += wall_elapsed
-            self.perf.cpu_time_xs_eval += cpu_elapsed
+            self.perf.time_xs_eval += time.perf_counter() - wall_t0
+            self.perf.cpu_time_xs_eval += time.process_time() - cpu_t0
             self.perf.n_xs_evaluations += 1
 
-            local_xs        = float(n.xs[0] + n.xs[1])
+            local_xs = float(n.xs[0] + n.xs[1])
             acceptance_prob = local_xs / majorant_xs
 
-            if self.verbose:
-                # [CHANGED] Adjusted trace for cleaner alignment
-                print(
-                    f"  [Trace] Mat: {mat.name:12s} | "
-                    f"local_xs: {local_xs:.4f} | "
-                    f"majorant: {majorant_xs:.4f} | "
-                    f"ratio: {acceptance_prob:.4f}"
-                )
-
-            # [MODIFIED] Scalar Optimization: Replace np.random.uniform() with random.random()
             if random.random() < acceptance_prob:
                 n.material = mat
                 return True
             return False
 
-    # ------------------------------------------------------------------
     def _sample_collision(self, n: Neutron) -> str:
-        if n.energy < self.cutoff_energy:
-            return "absorption"
+        if n.energy < self.cutoff_energy: return "absorption"
         scatter_prob = n.xs[0] / (n.xs[0] + n.xs[1])
-        # [MODIFIED] Scalar Optimization: Replace np.random.uniform() with random.random()
         return "scatter" if random.random() < scatter_prob else "absorption"
 
-    # ------------------------------------------------------------------
     def _scattering_neutron(self, n: Neutron):
         if self.mode == "analysis":
-            # [MODIFIED] Scalar Optimization: Use pure Python list math instead of np.array and np.random.choice
-            contributions = [density * nuclide_obj(n.energy, n.material.T)[0]
-                             for nuclide_obj, density in n.material.nuclides]
+            contributions = [density * nuclide_obj(n.energy, n.material.T)[0] for nuclide_obj, density in n.material.nuclides]
             total_prob = sum(contributions)
             rand_val = random.random() * total_prob
-            
             cum_sum = 0.0
             idx = 0
             for i, prob in enumerate(contributions):
@@ -1106,23 +667,17 @@ class Geometry:
                 if rand_val <= cum_sum:
                     idx = i
                     break
-
             A = n.material.nuclides[idx][0].sqrtAWR ** 2
 
         elif self.mode == "validation":
-            if len(n.material.nuclides) != 1:
-                raise ValueError("Group-wise scattering/validation mode only implemented for materials with a single nuclide.")
-            nuclide_obj = n.material.nuclides[0][0]
-            A = nuclide_obj.sqrtAWR ** 2
+            A = n.material.nuclides[0][0].sqrtAWR ** 2
 
-        # [MODIFIED] Scalar Optimization: Replace np.random and np.pi with random/math modules
         mu_cm = 2.0 * random.random() - 1.0
         phi   = 2.0 * math.pi * random.random()
 
         new_energy = n.energy * (A**2 + 2*A*mu_cm + 1) / (A + 1)**2
         n.energy   = max(new_energy, 1e-10)
 
-        # [MODIFIED] Scalar Optimization: Replace np.sqrt, np.cos, np.sin with native math functions
         denom  = math.sqrt(A**2 + 2*A*mu_cm + 1)
         mu_lab = (A * mu_cm + 1.0) / denom if denom != 0 else 0.0
 
@@ -1139,7 +694,6 @@ class Geometry:
         else:
             new_u = sin_theta * cos_phi
             new_v = sin_theta * sin_phi
-            # [MODIFIED] Scalar Optimization: Inline sign check instead of np.sign
             new_w = (1.0 if w >= 0 else -1.0) * mu_lab
 
         norm           = math.sqrt(new_u**2 + new_v**2 + new_w**2)
@@ -1147,12 +701,8 @@ class Geometry:
         n.direction[1] = new_v / norm
         n.direction[2] = new_w / norm
 
-    # ------------------------------------------------------------------
-    def _run_neutron(self, n: Neutron, neutron_id: int = 0,
-                    track_neutron: bool = False):
-        
+    def _run_neutron(self, n: Neutron, neutron_id: int = 0, track_neutron: bool = False):
         if self.history_flag:
-
             hist = NeutronHistory(
                 neutron_id     = neutron_id,
                 birth_energy   = n.energy,
@@ -1172,117 +722,64 @@ class Geometry:
             eng_out = [n.energy]
             evt_out = ["birth"]
 
-        # [MODIFIED] Optimization 2: Pre-calculate energy bin at birth to avoid O(log N) lookups on every step
         if self.flux_tally_flag and self.flux_tally is not None:
             n.current_energy_bin = self.flux_tally._energy_bin(n.energy)
             n.accumulated_distance = 0.0
 
         majorant_xs = self.get_majorant_xs(n.energy)
+        
+        # Sample the FIRST distance outside the loop
+        distance = self._sample_neutron_distance(majorant_xs)
 
         while True:
-            distance = self._sample_neutron_distance(majorant_xs)
-            x_start  = n.position[0]
-       
-            # move neutron
-            self._move_neutron(n, distance)
+            x_start = n.position[0]
             
-            self.distance_sampling_score += 1
+            # --- UNIFIED BOUNDARY HANDLING (Piecewise Flight) ---
+            # Calculate geometric distance to left and right boundaries
+            tol = 1e-13 # Tolerance to prevent getting stuck exactly on the wall
+            
+            if n.direction[0] < -tol:
+                dist_left = (self.boundaries[0] - n.position[0]) / n.direction[0]
+            else:
+                dist_left = float('inf')
+                
+            if n.direction[0] > tol:
+                dist_right = (self.boundaries[-1] - n.position[0]) / n.direction[0]
+            else:
+                dist_right = float('inf')
+                
+            dist_to_wall = min(dist_left, dist_right)
+            dist_to_wall = max(0.0, dist_to_wall) # Guard against floating point drift
+            
+            # Check if the sampled distance carries the neutron past the wall
+            if dist_to_wall < distance:
+                # --- WALL COLLISION ---
+                # Move neutron exactly TO the boundary
+                self._move_neutron(n, dist_to_wall)
+                
+                bc_side = "left" if dist_left < dist_right else "right"
+                x_boundary = self.boundaries[0] if bc_side == "left" else self.boundaries[-1]
+                
+                # Snap exactly to boundary coordinate to remove floating point errors
+                n.position[0] = x_boundary
+                
+                if self.flux_tally_flag and self.flux_tally is not None:
+                    n.accumulated_distance += dist_to_wall
+                self.distance_score += dist_to_wall
+                
+                bc_type = self.boundary_conditions[bc_side]
 
-            # ---------- Leakage / Boundary check — checked BEFORE any scoring ----------
-            if (n.position[0] < self.boundaries[0] or
-                    n.position[0] >= self.boundaries[-1]):
-
-                # Identify which boundary was crossed
-                leaked_left  = n.position[0] < self.boundaries[0]
-                leaked_right = n.position[0] >= self.boundaries[-1]
-                bc_side      = "left" if leaked_left else "right"
-
-                # Exact position of the boundary that was crossed
-                x_boundary = self.boundaries[0] if leaked_left else self.boundaries[-1]
-
-                # Distance travelled inside the geometry before reaching the boundary.
-                # Clipped to [0, distance] to guard against floating-point edge cases.
-                if abs(n.direction[0]) > 0.0:
-                    distance_inside = (x_boundary - x_start) / n.direction[0]
-                else:
-                    distance_inside = 0.0
-                distance_inside = max(0.0, min(distance_inside, distance))
-
-                # [NEW - REFLECTIVE BC] -----------------------------------------------
-                # Branch on the boundary condition for the side that was crossed.
-                if self.boundary_conditions[bc_side] == "reflective":
-
-                    # ── Reflective boundary ──────────────────────────────────────────
-                    # The neutron has overshot the wall by `overshoot` cm.  After
-                    # specular reflection the x-component of direction is negated and
-                    # the neutron is placed `overshoot` cm back inside.  This conserves
-                    # the full sampled free-path length, keeping the estimator unbiased.
-
-                    overshoot = distance - distance_inside  # cm past the wall
-
-                    # Fold position back inside: start at the wall, travel inward by overshoot.
-                    # Note: after negating direction[0], "inward" is the positive direction
-                    # for the left wall and the negative direction for the right wall.
-                    n.direction[0] *= -1.0  # specular reflection: flip x-component only
-                    n.position[0]   = x_boundary + n.direction[0] * overshoot
-
-                    # Clamp to prevent floating-point escape on extremely thin geometries
-                    n.position[0] = max(self.boundaries[0],
-                                        min(n.position[0], self.boundaries[-1] - 1e-14))
-
-                    self.distance_score += distance_inside
-
-                    # Score track length accumulated up to the wall into the flux tally.
-                    # The overshoot portion will be accumulated in the next iteration.
-                    if self.flux_tally_flag and self.flux_tally is not None:
-                        n.accumulated_distance += distance_inside
-                        if n.current_energy_bin >= 0:
-                            self.flux_tally._flux_tally.score(
-                                n.current_energy_bin, n.accumulated_distance)
-                        n.accumulated_distance = 0.0
-
-                    # Record the reflection event in the neutron history
-                    if self.history_flag:
-                        hist.positions.append(n.position.copy())
-                        hist.energies.append(n.energy)
-                        hist.events.append("reflect")
-                        hist.majorant_xs_at_step.append(majorant_xs)
-                        hist.local_xs_at_step.append(0.0)
-                        hist.material_at_step.append("boundary")
-                        hist.distances.append(distance_inside)
-
-                    if track_neutron:
-                        pos_out.append(n.position.copy())
-                        dir_out.append(n.direction.copy())
-                        eng_out.append(n.energy)
-                        evt_out.append("reflect")
-
-                    # Continue transport — do NOT break.
-                    # The majorant is not re-sampled here because the neutron energy
-                    # has not changed; the existing majorant_xs remains valid.
-                    continue
-                # [END NEW - REFLECTIVE BC] -------------------------------------------
-
-                else:
-                    # ── Vacuum boundary (original leakage logic, unchanged) ───────────
-
-                    self.distance_score += distance_inside
-
-                    # [FIX] score surface crossing up to the boundary only, not to
-                    # the out-of-bounds position — prevents spurious current scores
+                if bc_type == "vacuum":
+                    # TERMINATE
                     if self.verif_tally_flag and self.verif_tally is not None:
-                        self.verif_tally.score_surface_crossing(x_start, n.position[0])
-                        self.verif_tally.score_leakage(n.position[0])
-
-                    # [MODIFIED] Optimization 3: Accumulate track length and flush on leakage
-                    if self.flux_tally_flag and self.flux_tally is not None:
-                        n.accumulated_distance += distance_inside
-                        if n.current_energy_bin >= 0:
-                            # Direct scoring via _flux_tally array bypasses the bin binary search
-                            self.flux_tally._flux_tally.score(n.current_energy_bin, n.accumulated_distance)
-                        n.accumulated_distance = 0.0
-
+                        self.verif_tally.score_surface_crossing(x_start, x_boundary)
+                        self.verif_tally.score_leakage(x_boundary)
+                    
+                    if self.flux_tally_flag and self.flux_tally is not None and n.current_energy_bin >= 0:
+                        self.flux_tally._flux_tally.score(n.current_energy_bin, n.accumulated_distance)
+                    
                     self.leakage_score += 1
+                    
                     if self.history_flag:
                         hist.fate = "leakage"
                         hist.positions.append(n.position.copy())
@@ -1291,27 +788,50 @@ class Geometry:
                         hist.majorant_xs_at_step.append(majorant_xs)
                         hist.local_xs_at_step.append(0.0)
                         hist.material_at_step.append("outside")
-                        hist.distances.append(distance_inside)
+                        hist.distances.append(dist_to_wall)
 
                     if track_neutron:
                         pos_out.append(n.position.copy())
                         dir_out.append(n.direction.copy())
                         eng_out.append(n.energy)
                         evt_out.append("leakage")
-                    break
+                    break 
+                
+                elif bc_type == "reflective":
+                    # REDIRECT: Flip direction and deduct traveled distance
+                    n.direction[0] *= -1.0
+                    distance -= dist_to_wall  # The remaining distance to travel
+                    
+                    if self.history_flag:
+                        hist.positions.append(n.position.copy())
+                        hist.energies.append(n.energy)
+                        hist.events.append("reflect")
+                        hist.majorant_xs_at_step.append(majorant_xs)
+                        hist.local_xs_at_step.append(0.0)
+                        hist.material_at_step.append("boundary")
+                        hist.distances.append(dist_to_wall)
 
-            # ---------- Neutron stayed inside ----------
-            # [FIX] surface crossing scored here with actual in-bounds x_end
-            self.distance_score          += distance
+                    if track_neutron:
+                        pos_out.append(n.position.copy())
+                        dir_out.append(n.direction.copy())
+                        eng_out.append(n.energy)
+                        evt_out.append("reflect")
+
+                    # Loop around to simulate the rest of the flight (handles multiple bounces!)
+                    continue
+
+            # --- NO WALL COLLISION: NEUTRON STAYED INSIDE ---
+            # Move the full sampled distance to the collision site
+            self._move_neutron(n, distance) 
+            self.distance_score += distance
             
             if self.verif_tally_flag and self.verif_tally is not None:
                 self.verif_tally.score_surface_crossing(x_start, n.position[0])
-
-            # [MODIFIED] Optimization 3: Accumulate track length locally instead of scoring immediately
+            
             if self.flux_tally_flag and self.flux_tally is not None:
                 n.accumulated_distance += distance
 
-            # ---------- Acceptance check ----------
+            # Evaluate Delta-Tracking Acceptance
             if self._evaluate_acceptance(n, majorant_xs):
                 self.acception_score        += 1
                 self.perf.n_real_collisions += 1
@@ -1324,16 +844,13 @@ class Geometry:
                     self.absorption_score += 1
                     if self.history_flag:
                         hist.fate = "absorption"
-                        
 
                     if self.verif_tally_flag and self.verif_tally is not None:
-                        self.verif_tally.score_collision(
-                            n.position[0], n.energy, 'absorption')
+                        self.verif_tally.score_collision(n.position[0], n.energy, 'absorption')
                         
-                    # [MODIFIED] Optimization 3: Flush accumulated track length on absorption
                     if self.flux_tally_flag and self.flux_tally is not None and n.current_energy_bin >= 0:
                         self.flux_tally._flux_tally.score(n.current_energy_bin, n.accumulated_distance)
-                        n.accumulated_distance = 0.0
+                        n.accumulated_distance = 0.0 
                     
                     if self.history_flag:
                         hist.positions.append(n.position.copy())
@@ -1357,8 +874,7 @@ class Geometry:
                         hist.n_scatters       += 1
 
                     if self.verif_tally_flag and self.verif_tally is not None:
-                        self.verif_tally.score_collision(
-                            n.position[0], n.energy, 'scatter')
+                        self.verif_tally.score_collision(n.position[0], n.energy, 'scatter')
 
                     if self.history_flag:
                         hist.positions.append(n.position.copy())
@@ -1375,23 +891,22 @@ class Geometry:
                         eng_out.append(n.energy)
                         evt_out.append("scatter")
 
-                    # [MODIFIED] Optimization 3: Flush track length BEFORE scatter changes energy
                     if self.flux_tally_flag and self.flux_tally is not None and n.current_energy_bin >= 0:
                         self.flux_tally._flux_tally.score(n.current_energy_bin, n.accumulated_distance)
                         n.accumulated_distance = 0.0
 
                     self._scattering_neutron(n)
 
-                    # [MODIFIED] Optimization 2: Update cached energy bin AFTER scatter
                     if self.flux_tally_flag and self.flux_tally is not None:
                         n.current_energy_bin = self.flux_tally._energy_bin(n.energy)
 
                     majorant_xs = self.get_majorant_xs(n.energy)
+                    distance = self._sample_neutron_distance(majorant_xs)
 
             else:
-                # ---------- Virtual collision ----------
-                self.rejection_score           += 1
-                self.perf.n_virtual_collisions += 1
+                # Virtual collision
+                self.rejection_score            += 1
+                self.perf.n_virtual_collisions  += 1
                 if self.history_flag:
                     hist.n_virtual                 += 1
 
@@ -1400,19 +915,12 @@ class Geometry:
                 mat_name   = ""
                 if mat_at_pos is not None:
                     if self.mode == "analysis":
-                        xs_arr   = mat_at_pos._xs_evaluation(n.energy)
+                        xs_arr = mat_at_pos._xs_evaluation(n.energy)
                     elif self.mode == "validation":
-                        if mat_at_pos.name == "cell 1":
-                            xs_scatter    = self.df_group_xs[(self.df_group_xs['cell'] == 15)]['scatter'].sum()
-                            xs_absorption = self.df_group_xs[(self.df_group_xs['cell'] == 15)]['absorption'].sum()
-                            xs_fission    = self.df_group_xs[(self.df_group_xs['cell'] == 15)]['fission'].sum() if 'fission' in self.df_group_xs.columns else 0.0
-                            xs_arr = np.array([xs_scatter, xs_absorption, xs_fission])
-                        elif mat_at_pos.name == "cell 2":
-                            xs_scatter    = self.df_group_xs[(self.df_group_xs['cell'] == 16)]['scatter'].sum()
-                            xs_absorption = self.df_group_xs[(self.df_group_xs['cell'] == 16)]['absorption'].sum()
-                            xs_fission    = self.df_group_xs[(self.df_group_xs['cell'] == 16)]['fission'].sum() if 'fission' in self.df_group_xs.columns else 0.0
-                            xs_arr = np.array([xs_scatter, xs_absorption, xs_fission])
-
+                        m_id = 15 if mat_at_pos.name == "cell 1" else 16
+                        xs_scatter = self.df_group_xs[(self.df_group_xs['cell'] == m_id)]['scatter'].sum()
+                        xs_absorption = self.df_group_xs[(self.df_group_xs['cell'] == m_id)]['absorption'].sum()
+                        xs_arr = np.array([xs_scatter, xs_absorption, 0.0])
                     local_xs = float(xs_arr[0] + xs_arr[1])
                     mat_name = mat_at_pos.name
 
@@ -1430,6 +938,8 @@ class Geometry:
                     dir_out.append(n.direction.copy())
                     eng_out.append(n.energy)
                     evt_out.append("virtual")
+                    
+                distance = self._sample_neutron_distance(majorant_xs)
 
         if self.history_flag:
             self.histories.append(hist)
@@ -1442,15 +952,13 @@ class Geometry:
         if track_neutron:
             return pos_out, dir_out, eng_out, evt_out
         return None, None, None, None
-
     # ------------------------------------------------------------------
     def run_source(self, src, track_neutron: bool = False, from_batch: bool = False):
         self.source          = src
         self.perf.n_neutrons = src.neutron_nbr
 
         if self.memory_tracker_flag:
-            if not from_batch:
-                self.memory.start()
+            if not from_batch: self.memory.start()
 
         print(f"\n[Simulation] Running source (Mode: {self.mode})")
         if self.verbose:
@@ -1461,26 +969,18 @@ class Geometry:
 
         tracks = []
 
-        # _BatchSource has a pre-sampled .neutrons list (from generate_batch)
-        # Source streams on-the-fly via _sample_neutron()
         if hasattr(src, "neutrons"):
             neutron_iter = src.neutrons
             for nid, n in enumerate(neutron_iter):
-                active_neutron = Neutron(energy=n.energy, position=n.position,
-                                        direction=n.direction)
-                result = self._run_neutron(active_neutron, neutron_id=nid,
-                                        track_neutron=track_neutron)
-                if track_neutron:
-                    tracks.append(result)
+                active_neutron = Neutron(energy=n.energy, position=n.position, direction=n.direction)
+                result = self._run_neutron(active_neutron, neutron_id=nid, track_neutron=track_neutron)
+                if track_neutron: tracks.append(result)
         else:
             for nid in range(src.neutron_nbr):
                 n = src._sample_neutron()
-                active_neutron = Neutron(energy=n.energy, position=n.position,
-                                        direction=n.direction)
-                result = self._run_neutron(active_neutron, neutron_id=nid,
-                                        track_neutron=track_neutron)
-                if track_neutron:
-                    tracks.append(result)
+                active_neutron = Neutron(energy=n.energy, position=n.position, direction=n.direction)
+                result = self._run_neutron(active_neutron, neutron_id=nid, track_neutron=track_neutron)
+                if track_neutron: tracks.append(result)
 
         self.perf.n_wrong_majorant            = self.wrong_majorant_score
         self.perf.n_wrong_majorant_mean_error = self.wrong_majorant_error_score
@@ -1493,40 +993,17 @@ class Geometry:
         
         return tracks if track_neutron else None
 
-    
-    
-
-
     # ------------------------------------------------------------------
-    # [NEW] _compute_batch_stats()
-    # ─────────────────────────────────────────────────────────────────
     def _compute_batch_stats(self) -> dict:
-        """
-        Aggregate per-batch snapshots into cross-batch mean ± std.
-
-        For every tally key present in batch_results the method stacks the
-        per-batch mean arrays and computes:
-            cross_mean = mean over batches
-            cross_std  = std  over batches / sqrt(n_batches)   (std of the mean)
-
-        Returns a dict with keys "flux", "verif", "perf" (whichever are present).
-        Each sub-dict has "mean" and "std" (and "relative_error" for array tallies).
-        """
         B = len(self.batch_results)
         stats = {"n_batches": B}
 
-        # ── flux tally ────────────────────────────────────────────────────
         if "flux" in self.batch_results[0]:
-            # shape: (B, n_energy)
-            flux_means = np.array([r["flux"]["flux"]["mean"]
-                                   for r in self.batch_results])
+            flux_means = np.array([r["flux"]["flux"]["mean"] for r in self.batch_results])
             cross_mean = flux_means.mean(axis=0)
-            # std of the mean = sample_std / sqrt(B)
             cross_std  = flux_means.std(axis=0, ddof=1) / np.sqrt(B)
             with np.errstate(divide="ignore", invalid="ignore"):
-                re = np.where(cross_mean != 0.0,
-                              cross_std / np.abs(cross_mean),
-                              np.inf)
+                re = np.where(cross_mean != 0.0, cross_std / np.abs(cross_mean), np.inf)
             stats["flux"] = {
                 "energy_bins"   : self.batch_results[0]["flux"]["energy_bins"],
                 "mean"          : cross_mean.tolist(),
@@ -1534,39 +1011,26 @@ class Geometry:
                 "relative_error": re.tolist(),
             }
 
-        # ── verification tally ────────────────────────────────────────────
         if "verif" in self.batch_results[0]:
             verif_stats = {}
-            # quantities that are 2-D (n_space × n_energy)
             for key in ("absorption", "scatter"):
-                arr = np.array([r["verif"][key]["mean"]
-                                for r in self.batch_results])   # (B, ns, ne)
+                arr = np.array([r["verif"][key]["mean"] for r in self.batch_results])
                 cm  = arr.mean(axis=0)
                 cs  = arr.std(axis=0, ddof=1) / np.sqrt(B)
                 with np.errstate(divide="ignore", invalid="ignore"):
                     re = np.where(cm != 0.0, cs / np.abs(cm), np.inf)
-                verif_stats[key] = {
-                    "mean"          : cm.tolist(),
-                    "std"           : cs.tolist(),
-                    "relative_error": re.tolist(),
-                }
-            # quantities that are 1-D (n_surf,)
+                verif_stats[key] = {"mean": cm.tolist(), "std": cs.tolist(), "relative_error": re.tolist()}
+            
             for key in ("current_fwd", "current_bwd"):
-                arr = np.array([r["verif"][key]["mean"]
-                                for r in self.batch_results])   # (B, n_surf)
+                arr = np.array([r["verif"][key]["mean"] for r in self.batch_results])
                 cm  = arr.mean(axis=0)
                 cs  = arr.std(axis=0, ddof=1) / np.sqrt(B)
                 with np.errstate(divide="ignore", invalid="ignore"):
                     re = np.where(cm != 0.0, cs / np.abs(cm), np.inf)
-                verif_stats[key] = {
-                    "mean"          : cm.tolist(),
-                    "std"           : cs.tolist(),
-                    "relative_error": re.tolist(),
-                }
-            # scalar leakage quantities
+                verif_stats[key] = {"mean": cm.tolist(), "std": cs.tolist(), "relative_error": re.tolist()}
+            
             for key in ("leak_left", "leak_right"):
-                vals = np.array([r["verif"][key]["mean"]
-                                 for r in self.batch_results])  # (B,)
+                vals = np.array([r["verif"][key]["mean"] for r in self.batch_results])
                 cm   = float(vals.mean())
                 cs   = float(vals.std(ddof=1) / np.sqrt(B))
                 re   = cs / abs(cm) if cm != 0.0 else float("inf")
@@ -1576,54 +1040,28 @@ class Geometry:
             verif_stats["surface_xs"]  = self.batch_results[0]["verif"]["surface_xs"]
             stats["verif"] = verif_stats
 
-        # ── performance metrics ───────────────────────────────────────────
-        perf_keys = [
-                    "total_time_s", "total_cpu_time_s",
-                    "time_preprocessing_s", "cpu_time_preprocessing_s",
-                    "time_majorant_s",  "cpu_time_majorant_s",
-                    "time_xs_eval_s",   "cpu_time_xs_eval_s",
-                    "neutrons_per_second",
-                    "rejection_fraction", "cpu_efficiency",
-                ]
+        perf_keys = ["total_time_s", "total_cpu_time_s", "time_preprocessing_s", "cpu_time_preprocessing_s",
+                     "time_majorant_s", "cpu_time_majorant_s", "time_xs_eval_s", "cpu_time_xs_eval_s",
+                     "neutrons_per_second", "rejection_fraction", "cpu_efficiency"]
         perf_stats = {}
         for k in perf_keys:
             vals = np.array([r["perf"][k] for r in self.batch_results])
-            perf_stats[k] = {
-                "mean": float(vals.mean()),
-                "std" : float(vals.std(ddof=1)),
-            }
-        # summed (not averaged) counters
-        for k in ("n_neutrons", "n_real_collisions",
-                  "n_virtual_collisions", "n_majorant_updates"):
+            perf_stats[k] = {"mean": float(vals.mean()), "std": float(vals.std(ddof=1))}
+        
+        for k in ("n_neutrons", "n_real_collisions", "n_virtual_collisions", "n_majorant_updates"):
             perf_stats[k] = int(sum(r["perf"][k] for r in self.batch_results))
         stats["perf"] = perf_stats
 
-        # ── wrong majorant statistics ─────────────────────────────────────────
         for k in ("wrong_majorant_fraction", "wrong_majorant_mean_error"):
             vals = np.array([r["perf"][k] for r in self.batch_results])
-            perf_stats[k] = {
-                "mean": float(vals.mean()),
-                "std" : float(vals.std(ddof=1)),
-                "min" : float(vals.min()),
-                "max" : float(vals.max()),
-            }
+            perf_stats[k] = {"mean": float(vals.mean()), "std": float(vals.std(ddof=1)), "min": float(vals.min()), "max": float(vals.max())}
 
-        # total count — sum not average
-        perf_stats["n_wrong_majorant"] = int(sum(
-            r["perf"]["n_wrong_majorant"] for r in self.batch_results
-        ))
-        
-
-
+        perf_stats["n_wrong_majorant"] = int(sum(r["perf"]["n_wrong_majorant"] for r in self.batch_results))
         return stats
 
     # ------------------------------------------------------------------
     def summary(self) -> str:
-
-        # [FIX] Use the actual number of simulated neutrons, not the history list length
         n = max(self.perf.n_neutrons, 1)
-
-        # [FIX] Calculate fractions using global counters instead of history objects
         abs_frac      = self.absorption_score / n
         leak_frac     = self.leakage_score    / n
         mean_scatters = self.scattering_score / n
@@ -1637,8 +1075,7 @@ class Geometry:
             maj_margins = [r.margin for r in self._majorant_log]
             mat_counts: dict = {}
             for r in self._majorant_log:
-                mat_counts[r.limiting_material] = \
-                    mat_counts.get(r.limiting_material, 0) + 1
+                mat_counts[r.limiting_material] = mat_counts.get(r.limiting_material, 0) + 1
             top_mat = max(mat_counts, key=mat_counts.get)
         else:
             maj_values  = [0.0]
@@ -1646,9 +1083,7 @@ class Geometry:
             top_mat     = "N/A"
 
         lines = [
-            "=" * 60,
-            "  SIMULATION SUMMARY",
-            "=" * 60,
+            "=" * 60, "  SIMULATION SUMMARY", "=" * 60,
             f"  Neutrons simulated      : {n:>10,}",
             f"  Absorbed fraction       : {abs_frac:>10.3%}",
             f"  Leaked fraction         : {leak_frac:>10.3%}",
@@ -1662,8 +1097,8 @@ class Geometry:
             f"  Mean majorant [cm⁻¹]    : {np.mean(maj_values):>10.4f}",
             f"  Max  majorant [cm⁻¹]    : {np.max(maj_values):>10.4f}",
             f"  Mean margin (maj/real)  : {np.mean(maj_margins):>10.3f}",
-            f"  Min margin (maj/real)  : {np.min(maj_margins):>10.3f}",
-            f"  Max margin (maj/real)  : {np.max(maj_margins):>10.3f}",
+            f"  Min margin (maj/real)   : {np.min(maj_margins):>10.3f}",
+            f"  Max margin (maj/real)   : {np.max(maj_margins):>10.3f}",
             f"  Most-limiting material  : {top_mat}",
             f"  Wrong majorant updates  : {self.wrong_majorant_score:>10,}",
             f"  Wrong majorant mean error sum : {mean_wrong_maj_error:.4f}",
@@ -1684,7 +1119,6 @@ class Geometry:
 
     # ------------------------------------------------------------------
     def histories_to_dataframe(self):
-        
         rows = []
         for h in self.histories:
             for i in range(h.n_steps):
@@ -1706,17 +1140,8 @@ class Geometry:
         return pd.DataFrame(rows)
 
     def majorant_log_to_dataframe(self):
-        
-        rows = [
-            {
-                "energy"            : r.energy,
-                "majorant_xs"       : r.value,
-                "actual_max_xs"     : r.actual_max_xs,
-                "margin"            : r.margin,
-                "limiting_material" : r.limiting_material,
-            }
-            for r in self._majorant_log
-        ]
+        rows = [{"energy" : r.energy, "majorant_xs" : r.value, "actual_max_xs" : r.actual_max_xs,
+                 "margin" : r.margin, "limiting_material" : r.limiting_material} for r in self._majorant_log]
         return pd.DataFrame(rows)
     
     def memory_summary(self) -> str:
@@ -1726,6 +1151,6 @@ class Geometry:
         return self.memory.to_dataframe()
     
 
-Geometry.run_batch         = parallel.run_batch
+Geometry.run_batch          = parallel.run_batch
 Geometry.run_batch_serial   = parallel.run_batch_serial
 Geometry.run_batch_parallel = parallel.run_batch_parallel

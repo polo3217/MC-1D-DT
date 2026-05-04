@@ -1,0 +1,22 @@
+<?xml version='1.0' encoding='UTF-8'?>
+<settings>
+  <run_mode>fixed source</run_mode>
+  <particles>50000</particles>
+  <batches>20</batches>
+  <source particle="neutron" strength="1.0" type="independent">
+    <space type="point">
+      <parameters>1e-06 0.0 0.0</parameters>
+    </space>
+    <angle reference_uvw="1.0 0.0 0.0" type="monodirectional"/>
+    <energy type="discrete">
+      <parameters>500.0 1.0</parameters>
+    </energy>
+  </source>
+  <cutoff>
+    <energy>70.0</energy>
+  </cutoff>
+  <temperature_method>nearest</temperature_method>
+  <temperature_multipole>true</temperature_multipole>
+  <temperature_tolerance>3000.0</temperature_tolerance>
+  <create_fission_neutrons>false</create_fission_neutrons>
+</settings>

@@ -18,7 +18,7 @@ import src.export_simulation_v3 as xpsim
 import src.export_print_csv as xpcsv
 import src.reconr_v2 as reconr
 import src.parallel as parallel
-
+from typing import List, Optional
 import openmc
 
 openmc.config['cross_sections'] = "/home/paule/open_mc_projects/xs_lib/endfb-vii.1-hdf5/cross_sections.xml"
@@ -28,7 +28,7 @@ def create_geometry_U8_slab(maj_mat_method,
                             maj_xs_method, 
                             access_method, 
                             mode,
-                            xs_maj_file_dir,
+                            xs_maj_file_dir:Optional[str] = None,
                             T_array=None
                              ) -> Geometry:
 

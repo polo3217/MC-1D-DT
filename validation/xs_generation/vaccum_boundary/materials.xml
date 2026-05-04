@@ -1,11 +1,13 @@
 <?xml version='1.0' encoding='utf-8'?>
 <materials>
-  <material depletable="true" id="7" name="U8 @ 293K" temperature="293.6">
+  <material depletable="true" id="1" name="U8 @ 293K" temperature="293.6">
     <density units="g/cm3" value="19.1"/>
     <nuclide ao="1.0" name="U238"/>
+    <isotropic>U238</isotropic>
   </material>
-  <material depletable="true" id="8" name="U @ 293K" temperature="2000.0">
+  <material depletable="true" id="2" name="U @ 2000K" temperature="2000.0">
     <density units="g/cm3" value="19.1"/>
     <nuclide ao="1.0" name="U238"/>
+    <isotropic>U238</isotropic>
   </material>
 </materials>
