@@ -101,6 +101,7 @@ def _run_single_batch_worker(args):
     # performance counters are part of the geometry object, so they are
     # already isolated per-worker — there is no shared state between workers.
     geom = pickle.loads(geom_pickle)
+    src.geometry = geom
 
     # ── 2. Sample a fresh batch on the worker side ──────────────────────────
     # We do NOT pre-sample neutrons in the parent and ship them, because

@@ -64,7 +64,7 @@ def export_cross_batch_stats(batch_stats, geom,
     abs_mean = _arr(batch_stats, "verif", "absorption", "mean")
     abs_std  = _arr(batch_stats, "verif", "absorption", "std")
     abs_re   = _arr(batch_stats, "verif", "absorption", "relative_error")
-    sxb      = np.array(geom.boundaries)
+    sxb      = np.array(batch_stats["verif"]["boundaries"])
     n_space  = len(sxb) - 1
     space_labels = [f"{sxb[i]:.1f}-{sxb[i+1]:.1f} cm" for i in range(n_space)]
 
@@ -155,7 +155,13 @@ def export_cross_batch_stats(batch_stats, geom,
         print("\n  PERFORMANCE (cross-batch)")
         print(f"  {'Metric':<30} {'Mean':>14} {'±Std':>14}")
         print("  " + "-"*60)
-        for key in ("total_time_s", "time_preprocessing_s", "neutrons_per_second", "rejection_fraction", "cpu_efficiency"):
+        for key in (
+            "time_preprocessing_s", "time_run_source_s", "time_total_s",
+            "neutrons_per_second", "rejection_fraction", "cpu_efficiency",
+            "time_majorant_s", "time_xs_eval_s",
+        ):
+            if key not in perf:
+                continue
             print(f"  {key:<30} {perf[key]['mean']:>14.4f} {perf[key]['std']:>14.4f}")
         print(f"  {'n_neutrons (total)':<30} {perf['n_neutrons']:>14,}")
         print(f"  {'n_real_collisions (total)':<30} {perf['n_real_collisions']:>14,}")
@@ -240,7 +246,18 @@ def export_cross_batch_stats(batch_stats, geom,
 
         # performance
         perf = batch_stats["perf"]
-        for key in ("total_time_s", "time_preprocessing_s", "neutrons_per_second", "rejection_fraction", "cpu_efficiency"):
+        for key in (
+            "time_preprocessing_s",
+            "time_run_source_s",
+            "time_total_s",
+            "neutrons_per_second",
+            "rejection_fraction",
+            "cpu_efficiency",
+            "time_majorant_s",
+            "time_xs_eval_s",
+        ):
+            if key not in perf:
+                continue   # graceful fallback for older batch_stats dicts
             cross_rows.append({
                 "tally"          : key,
                 "region"         : "performance",
@@ -249,14 +266,6 @@ def export_cross_batch_stats(batch_stats, geom,
                 "std"            : perf[key]['std'],
                 "relative_error" : float("nan"),
             })
-        cross_rows.append({
-            "tally"          : "n_neutrons (total)",
-            "region"         : "performance",
-            "energy_group"   : "all",
-            "mean"           : perf['n_neutrons'],
-            "std"            : float("nan"),
-            "relative_error" : float("nan"),
-        })
         cross_rows.append({
             "tally"          : "n_real_collisions (total)",
             "region"         : "performance",

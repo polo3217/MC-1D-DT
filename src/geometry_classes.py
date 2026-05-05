@@ -49,6 +49,7 @@ import src.reconr_v2 as reconr
 import src.serpent_rothenstein as srp
 import src.parallel as parallel
 import src.sqrtT_E as sqrtT_E
+import src.reconr_parallel as reconr_parallel
 
 global  valid_nuclides_name 
 global  valid_nuclides_list 
@@ -320,7 +321,7 @@ class Geometry:
 
         if value == "reconr":
             print("[Setup] Building majorant XS grid for RECONR access method...")
-            self.reconr_e_grid, self.reconr_maj_xs_grid, self.reconr_sqrt_E_min, self.reconr_e_spacing, self.reconr_window_pointers = reconr.build_majorant_xs_grid(self, err_lim, err_max, err_int, last_window, last_energy)
+            self.reconr_e_grid, self.reconr_maj_xs_grid, self.reconr_sqrt_E_min, self.reconr_e_spacing, self.reconr_window_pointers = reconr_parallel.build_majorant_xs_grid(self, err_lim, err_max, err_int, last_window, last_energy)
         
         if self.memory_tracker_flag: self.memory.snapshot("access_method_setup")
         if self.memory_tracker_flag: self.memory.stop()
@@ -491,11 +492,16 @@ class Geometry:
         mat_maj.total_density = float(sum(d for _, d in mat_maj.nuclides))
         return mat_maj
 
-    def attach_flux_tally(self, energy_bins: List[float], transverse_area: float = 1.0):
-        self.flux_tally = FluxTallyTLE(self.boundaries, energy_bins, transverse_area)
+    def attach_flux_tally(self, energy_bins: List[float], transverse_area: float = 1.0, boundaries: Optional[List[float]] = None):
+        if boundaries == None:
+            boundaries = self.boundaries
+        self.flux_tally = FluxTallyTLE(boundaries, energy_bins, transverse_area)
 
-    def attach_verification_tally(self, energy_bins: List[float], surface_xs: List[float]):
-        self.verif_tally = VerificationTally(self.boundaries, energy_bins, surface_xs)
+    def attach_verification_tally(self, energy_bins: List[float], surface_xs: List[float], boundaries: Optional[List[float]] = None):
+        if boundaries == None:
+            boundaries = self.boundaries
+            
+        self.verif_tally = VerificationTally(boundaries, energy_bins, surface_xs)
 
     def set_boundary_conditions(self, left: str = "vacuum", right: str = "vacuum"):
         valid = {"vacuum", "reflective"}
@@ -1020,7 +1026,7 @@ class Geometry:
                 with np.errstate(divide="ignore", invalid="ignore"):
                     re = np.where(cm != 0.0, cs / np.abs(cm), np.inf)
                 verif_stats[key] = {"mean": cm.tolist(), "std": cs.tolist(), "relative_error": re.tolist()}
-            
+
             for key in ("current_fwd", "current_bwd"):
                 arr = np.array([r["verif"][key]["mean"] for r in self.batch_results])
                 cm  = arr.mean(axis=0)
@@ -1028,7 +1034,7 @@ class Geometry:
                 with np.errstate(divide="ignore", invalid="ignore"):
                     re = np.where(cm != 0.0, cs / np.abs(cm), np.inf)
                 verif_stats[key] = {"mean": cm.tolist(), "std": cs.tolist(), "relative_error": re.tolist()}
-            
+
             for key in ("leak_left", "leak_right"):
                 vals = np.array([r["verif"][key]["mean"] for r in self.batch_results])
                 cm   = float(vals.mean())
@@ -1038,25 +1044,52 @@ class Geometry:
 
             verif_stats["energy_bins"] = self.batch_results[0]["verif"]["energy_bins"]
             verif_stats["surface_xs"]  = self.batch_results[0]["verif"]["surface_xs"]
+            verif_stats["boundaries"]  = self.batch_results[0]["verif"]["boundaries"]
             stats["verif"] = verif_stats
 
-        perf_keys = ["total_time_s", "total_cpu_time_s", "time_preprocessing_s", "cpu_time_preprocessing_s",
-                     "time_majorant_s", "cpu_time_majorant_s", "time_xs_eval_s", "cpu_time_xs_eval_s",
-                     "neutrons_per_second", "rejection_fraction", "cpu_efficiency"]
+        # ── performance ───────────────────────────────────────────────────────
+        # Float keys: compute mean ± std across batches
+        perf_float_keys = [
+            "total_time_s",          "total_cpu_time_s",
+            "time_preprocessing_s",  "cpu_time_preprocessing_s",
+            "time_run_source_s",     "cpu_time_run_source_s",
+            "time_total_s",          "cpu_time_total_s",
+            "time_majorant_s",       "cpu_time_majorant_s",
+            "time_xs_eval_s",        "cpu_time_xs_eval_s",
+            "neutrons_per_second",   "rejection_fraction",
+            "cpu_efficiency",
+        ]
         perf_stats = {}
-        for k in perf_keys:
-            vals = np.array([r["perf"][k] for r in self.batch_results])
-            perf_stats[k] = {"mean": float(vals.mean()), "std": float(vals.std(ddof=1))}
-        
-        for k in ("n_neutrons", "n_real_collisions", "n_virtual_collisions", "n_majorant_updates"):
-            perf_stats[k] = int(sum(r["perf"][k] for r in self.batch_results))
-        stats["perf"] = perf_stats
+        for k in perf_float_keys:
+            vals = np.array([r["perf"][k] for r in self.batch_results
+                             if k in r["perf"]])
+            if len(vals) == 0:
+                perf_stats[k] = {"mean": float("nan"), "std": float("nan")}
+            else:
+                perf_stats[k] = {
+                    "mean": float(vals.mean()),
+                    "std":  float(vals.std(ddof=1)),
+                }
 
+        # Integer keys: sum across all batches
+        for k in ("n_neutrons", "n_real_collisions", "n_virtual_collisions",
+                  "n_majorant_updates", "n_xs_evaluations"):
+            perf_stats[k] = int(sum(r["perf"].get(k, 0) for r in self.batch_results))
+
+        # Wrong majorant: mean ± std + min/max + total count
         for k in ("wrong_majorant_fraction", "wrong_majorant_mean_error"):
             vals = np.array([r["perf"][k] for r in self.batch_results])
-            perf_stats[k] = {"mean": float(vals.mean()), "std": float(vals.std(ddof=1)), "min": float(vals.min()), "max": float(vals.max())}
+            perf_stats[k] = {
+                "mean": float(vals.mean()),
+                "std":  float(vals.std(ddof=1)),
+                "min":  float(vals.min()),
+                "max":  float(vals.max()),
+            }
+        perf_stats["n_wrong_majorant"] = int(
+            sum(r["perf"]["n_wrong_majorant"] for r in self.batch_results)
+        )
 
-        perf_stats["n_wrong_majorant"] = int(sum(r["perf"]["n_wrong_majorant"] for r in self.batch_results))
+        stats["perf"] = perf_stats
         return stats
 
     # ------------------------------------------------------------------

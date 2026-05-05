@@ -11,7 +11,7 @@ from typing import List, Optional
 import numpy as np
 import majorant_multipole as maj
 import openmc
-import reconr
+
 
 # ==========================================
 # [NEW] --- Tally class ---
@@ -343,7 +343,9 @@ class FluxTallyTLE:
         Keys: mean, std, relative_error  (each a list of length n_energy).
         """
         return {
-            "energy_bins"    : self.energy_bins.tolist(),
+            "energy_bins" : self.energy_bins.tolist(),
+            "boundaries"  : self.boundaries.tolist(),   # ← add this
+            "surface_xs"  : self.surface_xs.tolist(),
             "flux"           : self._flux_tally.snapshot(),
         }
 
@@ -595,6 +597,8 @@ class VerificationTally:
         Suitable for storage in geometry.batch_results.
         """
         return {
+            "boundaries"  : self.boundaries.tolist(),   # ← add this
+            "surface_xs"  : self.surface_xs.tolist(),
             "energy_bins"    : self.energy_bins.tolist(),
             "surface_xs"     : self.surface_xs.tolist(),
             "absorption"     : self._absorption.snapshot(),
