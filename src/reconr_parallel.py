@@ -16,7 +16,7 @@ affects window w+1.  We therefore:
   4. Rebuild the O(1) window pointer table from the merged grid.
 
 Parallelism is provided by concurrent.futures.ProcessPoolExecutor so that
-the GIL is not a bottleneck (caculate_mat_majorant_xs is CPU-bound).
+the GIL is not a bottleneck (calculate_mat_majorant_xs is CPU-bound).
 
 Because worker processes cannot share the geometry object directly (it is not
 picklable in general), we extract the XS evaluation callable into a
@@ -48,7 +48,7 @@ def _worker_init(geometry):
 
 def _eval_xs(e: float) -> float:
     """Worker-side XS evaluation — uses the process-local geometry."""
-    return _GEOMETRY.caculate_mat_majorant_xs(e)
+    return _GEOMETRY.calculate_mat_majorant_xs(e)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -366,7 +366,7 @@ def build_majorant_xs_grid(
 
     # Re-append the very last point (dropped by all workers to avoid duplicates)
     energy_grid.append(window_slices[-1][-1])
-    xs_grid.append(geometry.caculate_mat_majorant_xs(window_slices[-1][-1]))
+    xs_grid.append(geometry.calculate_mat_majorant_xs(window_slices[-1][-1]))
 
     print(f"[reconr_parallel] merged grid: {len(energy_grid)} points")
 
@@ -405,5 +405,265 @@ def build_majorant_xs_grid(
     print(f"[reconr_parallel] window pointers: {len(window_pointers)-1} windows")
     print(f"[reconr_parallel] E_first={e_grid_list[0]:.4e} eV, "
           f"E_last={e_grid_list[-1]:.4e} eV")
+
+    return e_grid_list, xs_grid_list, math.sqrt(E_min), E_spacing, window_pointers
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-nuclide worker globals
+# ─────────────────────────────────────────────────────────────────────────────
+
+_NUCLIDE = None   # set by _nuclide_worker_init in each subprocess
+
+
+def _nuclide_worker_init(geometry, nuclide):
+    global _GEOMETRY, _NUCLIDE
+    _GEOMETRY = geometry
+    _NUCLIDE  = nuclide
+
+
+def _eval_xs_nuclide(e: float) -> float:
+    """Worker-side per-nuclide XS evaluation."""
+    return _GEOMETRY.calculate_nuclide_majorant_xs(energy=e, nuclide=_NUCLIDE)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-window worker — nuclide variant
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _process_window_nuclide(
+    window_idx:    int,
+    window_points: List[float],
+    err_lim:       float,
+    err_max:       float,
+    err_int:       float,
+) -> Tuple[int, List[float], List[float]]:
+    """
+    Identical logic to _process_window but calls _eval_xs_nuclide instead of
+    _eval_xs.  Kept separate to avoid adding a branch inside the hot loop.
+    """
+    _cache: dict[float, float] = {}
+
+    def eval_xs_cached(e: float) -> float:
+        if e not in _cache:
+            _cache[e] = _eval_xs_nuclide(e)
+        return _cache[e]
+
+    # ── Pass 1 : err_max ─────────────────────────────────────────────────────
+    point_grid = list(window_points)
+    energy_grid: List[float] = []
+    xs_grid:     List[float] = []
+
+    i = 0
+    last_e = point_grid[-1]
+
+    while i < len(point_grid) - 1:
+        e_last = point_grid[i]
+        e_next = point_grid[i + 1]
+        if e_last >= last_e:
+            break
+
+        sigma_last   = eval_xs_cached(e_last)
+        sigma_next   = eval_xs_cached(e_next)
+        e_half, _, _, converged = _truncate_midpoint(e_last, e_next)
+        sigma_half   = eval_xs_cached(e_half)
+        sigma_interp = (sigma_last + sigma_next) / 2.0
+        err = (abs(sigma_half - sigma_interp) / sigma_half
+               if sigma_half != 0 else 0.0)
+
+        if err > err_max and not converged:
+            point_grid.insert(i + 1, e_half)
+        else:
+            energy_grid.append(e_last)
+            xs_grid.append(sigma_last)
+            i += 1
+
+    energy_grid.append(point_grid[-1])
+    xs_grid.append(eval_xs_cached(point_grid[-1]))
+
+    # ── Pass 2 : err_lim ─────────────────────────────────────────────────────
+    i = 0
+    last_e = energy_grid[-1]
+
+    while i < len(energy_grid) - 1:
+        e      = energy_grid[i]
+        e_next = energy_grid[i + 1]
+        if e >= last_e:
+            break
+
+        sigma      = xs_grid[i]
+        sigma_next = xs_grid[i + 1]
+        e_half, _, _, converged = _truncate_midpoint(e, e_next)
+        sigma_half   = eval_xs_cached(e_half)
+        sigma_interp = (sigma + sigma_next) / 2.0
+        err  = (abs(sigma_half - sigma_interp) / sigma_half
+                if sigma_half != 0 else 0.0)
+        area = 0.5 * abs(sigma_half - sigma_interp) * (e_next - e)
+
+        if err > err_lim and area > err_int and not converged:
+            energy_grid.insert(i + 1, e_half)
+            xs_grid.insert(i + 1, sigma_half)
+        else:
+            i += 1
+
+    # Drop last point to avoid duplicates at window boundaries
+    return window_idx, energy_grid[:-1], xs_grid[:-1]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Public entry point — per-nuclide
+# ─────────────────────────────────────────────────────────────────────────────
+
+def build_majorant_xs_nuclide(
+    geometry,
+    nuclide,
+    err_lim:     float = 0.001,
+    err_max:     float = 0.01,
+    err_int:     float | None = None,
+    last_energy: float | None = None,
+    n_workers:   int   | None = None,
+) -> Tuple[List[float], List[float], float, float, List[int]]:
+    """
+    Parallelised per-nuclide majorant grid builder.
+
+    Replaces the serial build_majorant_xs_nuclide in reconr_v2.py.
+    The XS evaluated at each energy point is:
+
+        sigma_maj(E) = calculate_nuclide_majorant_xs(E, nuclide)
+
+    which bounds the nuclide xs over the temperature range [T_min, T_max]
+    already encoded in the geometry's maj_xs_method settings.
+
+    Parameters
+    ----------
+    geometry    : Geometry   — must have calculate_nuclide_majorant_xs defined
+    nuclide     : WMP object — the nuclide to build the grid for
+    err_lim     : float      — fine refinement tolerance
+    err_max     : float      — coarse refinement tolerance
+    err_int     : float|None — area tolerance (default err_lim / 20000)
+    last_energy : float|None — cap the grid at this energy (eV)
+    n_workers   : int|None   — parallel workers (default cpu_count - 2)
+
+    Returns
+    -------
+    Same 5-tuple as the serial version:
+    (e_grid, xs_grid, sqrt_E_min, e_spacing, window_pointers)
+    """
+    if err_int is None:
+        err_int = err_lim / 20_000
+
+    if n_workers is None:
+        n_workers = max(1, os.cpu_count() - 2)
+
+    E_min     = nuclide.E_min
+    E_max     = nuclide.E_max
+    E_spacing = nuclide.spacing
+    n_windows = nuclide.n_windows
+
+    if last_energy is not None:
+        E_max = min(E_max, last_energy)
+
+    print(f"[reconr_parallel | {nuclide.name}] "
+          f"{n_windows} windows, E ∈ [{E_min:.3e}, {E_max:.3e}] eV")
+    print(f"[reconr_parallel | {nuclide.name}] "
+          f"err_max={err_max}, err_lim={err_lim}, err_int={err_int:.3e}, "
+          f"workers={n_workers}")
+
+    # ── Initial point grid ────────────────────────────────────────────────────
+    point_grid: List[float] = []
+    for i in range(n_windows):
+        e = (math.sqrt(E_min) + i * E_spacing) ** 2
+        if e > E_max:
+            break
+        point_grid.append(e)
+
+    if point_grid[-1] < E_max:
+        point_grid.append(E_max)
+
+    # ── Split into per-window slices ──────────────────────────────────────────
+    window_slices   = _split_into_windows(point_grid, E_min, E_spacing)
+    n_actual_windows = len(window_slices)
+    print(f"[reconr_parallel | {nuclide.name}] "
+          f"{n_actual_windows} non-empty windows to process")
+
+    # ── Dispatch workers ──────────────────────────────────────────────────────
+    results: dict[int, Tuple[List[float], List[float]]] = {}
+
+    if n_workers == 1:
+        _nuclide_worker_init(geometry, nuclide)
+        for w_idx, pts in enumerate(window_slices):
+            _, e_local, xs_local = _process_window_nuclide(
+                w_idx, pts, err_lim, err_max, err_int
+            )
+            results[w_idx] = (e_local, xs_local)
+            if w_idx % max(1, n_actual_windows // 10) == 0:
+                print(f"  [{nuclide.name}] window {w_idx:4d}/{n_actual_windows} "
+                      f"({100*w_idx/n_actual_windows:.0f}%)")
+    else:
+        with ProcessPoolExecutor(
+            max_workers=n_workers,
+            initializer=_nuclide_worker_init,
+            initargs=(geometry, nuclide),
+        ) as pool:
+            futures = {
+                pool.submit(
+                    _process_window_nuclide, w_idx, pts, err_lim, err_max, err_int
+                ): w_idx
+                for w_idx, pts in enumerate(window_slices)
+            }
+            done = 0
+            for future in as_completed(futures):
+                w_idx, e_local, xs_local = future.result()
+                results[w_idx] = (e_local, xs_local)
+                done += 1
+                if done % max(1, n_actual_windows // 10) == 0:
+                    print(f"  [{nuclide.name}] {done:4d}/{n_actual_windows} done "
+                          f"({100*done/n_actual_windows:.0f}%)")
+
+    # ── Merge ─────────────────────────────────────────────────────────────────
+    energy_grid: List[float] = []
+    xs_grid:     List[float] = []
+
+    for w_idx in range(n_actual_windows):
+        e_local, xs_local = results[w_idx]
+        energy_grid.extend(e_local)
+        xs_grid.extend(xs_local)
+
+    # Re-append the final point dropped by the last worker
+    energy_grid.append(window_slices[-1][-1])
+    xs_grid.append(geometry.calculate_nuclide_majorant_xs(
+        energy=window_slices[-1][-1], nuclide=nuclide
+    ))
+
+    print(f"[reconr_parallel | {nuclide.name}] merged: {len(energy_grid)} points")
+
+    # ── Safety margin + dedup ─────────────────────────────────────────────────
+    e_arr  = np.array(energy_grid)
+    xs_arr = np.array(xs_grid) * (1.0 + err_max)
+
+    diffs = np.diff(e_arr)
+    if np.any(diffs <= 0):
+        print(f"[reconr_parallel | {nuclide.name}] WARNING: "
+              f"{(diffs <= 0).sum()} inversions before dedup")
+    mask   = np.concatenate(([True], diffs > 0))
+    e_arr  = e_arr[mask]
+    xs_arr = xs_arr[mask]
+    print(f"[reconr_parallel | {nuclide.name}] "
+          f"dedup removed {(~mask).sum()} points, final: {len(e_arr)}")
+
+    e_grid_list  = e_arr.tolist()
+    xs_grid_list = xs_arr.tolist()
+
+    # ── Window pointer table ──────────────────────────────────────────────────
+    window_pointers = [0]
+    current_window  = 0
+    for idx, e in enumerate(e_grid_list):
+        w = int((math.sqrt(e) - math.sqrt(E_min)) / E_spacing)
+        while w > current_window:
+            window_pointers.append(idx)
+            current_window += 1
+    window_pointers.append(len(e_grid_list))
+
+    print(f"[reconr_parallel | {nuclide.name}] "
+          f"E_first={e_grid_list[0]:.4e}, E_last={e_grid_list[-1]:.4e}")
 
     return e_grid_list, xs_grid_list, math.sqrt(E_min), E_spacing, window_pointers

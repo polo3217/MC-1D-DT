@@ -9,7 +9,6 @@ from pathlib import Path
 
 from typing import List, Optional
 import numpy as np
-import majorant_multipole as maj
 import openmc
 
 

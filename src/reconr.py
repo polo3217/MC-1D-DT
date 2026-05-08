@@ -94,8 +94,8 @@ def build_majorant_xs_grid(
         #evaluate the cross section at i_grid, i_grid + 1 and i_grid + 1/2 spacing
         e_last = point_grid[i_grid]
         e_next = point_grid[i_grid + 1]
-        sigma_total = geometry.caculate_mat_majorant_xs(e_last)
-        sigma_total_next = geometry.caculate_mat_majorant_xs(e_next)
+        sigma_total = geometry.calculate_mat_majorant_xs(e_last)
+        sigma_total_next = geometry.calculate_mat_majorant_xs(e_next)
 
         ## additional check from RECONR
         # roudinng error check
@@ -119,7 +119,7 @@ def build_majorant_xs_grid(
             
 
 
-        sigma_total_half = geometry.caculate_mat_majorant_xs(e_half_truncated)
+        sigma_total_half = geometry.calculate_mat_majorant_xs(e_half_truncated)
 
 
 
@@ -141,7 +141,7 @@ def build_majorant_xs_grid(
 
     # add the last point
     energy_grid.append(last_energy_to_add)
-    cross_section_grid.append(geometry.caculate_mat_majorant_xs(last_energy_to_add))
+    cross_section_grid.append(geometry.calculate_mat_majorant_xs(last_energy_to_add))
     print("done")
 
     # RECONR second additional check with errmax
@@ -175,7 +175,7 @@ def build_majorant_xs_grid(
                 convergence_flag = True
                 
         sigma_next = cross_section_grid[i_grid + 1]
-        sigma_half = geometry.caculate_mat_majorant_xs(e_half_truncated)
+        sigma_half = geometry.calculate_mat_majorant_xs(e_half_truncated)
         sigma_interp = (sigma + sigma_next) / 2
         if sigma_half == 0:
             err = 0

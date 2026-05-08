@@ -5,7 +5,7 @@ sys.path.append('/home/paule/open_mc_projects/windowed_multipole/02_working_note
 
 import numpy as np
 import pandas as pd
-import majorant_multipole as maj
+
 
 from math import exp, erf, pi, sqrt
 from scipy.special import wofz

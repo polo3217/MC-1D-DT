@@ -166,6 +166,10 @@ def export_cross_batch_stats(batch_stats, geom,
         print(f"  {'n_neutrons (total)':<30} {perf['n_neutrons']:>14,}")
         print(f"  {'n_real_collisions (total)':<30} {perf['n_real_collisions']:>14,}")
         print(f"  {'n_virtual_collisions (total)':<30} {perf['n_virtual_collisions']:>14,}")
+        print(f"  {'n_xs_evaluations (total)':<30} {perf['n_xs_evaluations']:>14,}")
+        print(f"  {'n_majorant_updates (total)':<30} {perf['n_majorant_updates']:>14,}")
+        print(f"  {'time per xs evaluation (ms)':<30} {1000 * perf['time_xs_eval_s']['mean'] / perf['n_xs_evaluations']:>14.4f}")
+        print(f"  {'time per majorant update (ms)':<30} {1000 * perf['time_majorant_s']['mean'] / perf['n_majorant_updates']:>14.4f}")
         print("="*70)
 
         print("\n  WRONG MAJORANT STATISTICS")
@@ -279,6 +283,24 @@ def export_cross_batch_stats(batch_stats, geom,
             "region"         : "performance",
             "energy_group"   : "all",
             "mean"           : perf['n_virtual_collisions'],
+            "std"            : float("nan"),
+            "relative_error" : float("nan"),
+        })
+
+        cross_rows.append({
+            "tally"          : "n_xs_evaluations",
+            "region"         : "performance",
+            "energy_group"   : "all",
+            "mean"           : perf['n_xs_evaluations'],
+            "std"            : float("nan"),
+            "relative_error" : float("nan"),
+        })
+
+        cross_rows.append({
+            "tally"          :  "n_majorant_updates",
+            "region"         : "performance",
+            "energy_group"   : "all",
+            "mean"           : perf['n_majorant_updates'],
             "std"            : float("nan"),
             "relative_error" : float("nan"),
         })

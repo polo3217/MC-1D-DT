@@ -16,7 +16,7 @@ import bisect
 import random
 import math
 
-import majorant_multipole as maj
+
 from src.performance_classes import PerformanceTracker, MajorantRecord, NeutronHistory, MemoryTracker
 from src.tally_classes import FluxTallyTLE, VerificationTally
 from src.neutron_class import Neutron

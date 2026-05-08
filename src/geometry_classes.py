@@ -37,7 +37,7 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.patches import FancyArrowPatch
 
-import majorant_multipole as maj
+
 from src.source_class import Source
 from src.neutron_class import Neutron
 from src.performance_classes import PerformanceTracker, MajorantRecord, NeutronHistory, MemoryTracker, BatchTimer
@@ -57,8 +57,8 @@ global  xs_dir
 global xs_dir_sqrtT_E
 global xs_dir_vectfit
 
-valid_nuclides_name = [ "U238", "U235", "Pu239","Pu240", "Cnat", "O16", "H1", "Fe56", "Xe135", "Na23" ]    
-valid_nuclides_list = [ '092238', '092235', '094239', '094240', '006000',  '008016', '001001','026056','054135', '011023']
+valid_nuclides_name = [ "U238", "U235","Pu238", "Pu239","Pu240", "Pu241", "Pu242", "Am241", "Cnat", "O16", "H1", "Fe56", "Xe135", "Na23",   "Zr90"]    
+valid_nuclides_list = [ '092238', '092235', '094238', '094239', '094240', '095241', '094241', '094242', '006000',  '008016', '001001','026056','054135', '011023',   '040090']
 xs_dir = '/home/paule/open_mc_projects/xs_lib/endfb-vii.1-hdf5/wmp'
 xs_dir_sqrtT_E = '/home/paule/open_mc_projects/MC-1D_DT/structured_code/src/sqrtT_E_data'
 xs_dir_vectfit = '/home/paule/open_mc_projects/MC-1D_DT/structured_code/src/vectfit_data'
@@ -106,6 +106,16 @@ class Region:
     x_min: float
     x_max: float
 
+
+@dataclass
+class NuclideReconrGrid:
+    e_grid        : list
+    xs_grid       : list
+    sqrt_E_min    : float
+    e_spacing     : float
+    window_pointers: list
+
+
 # ==========================================
 # --- Geometry class ---
 # ==========================================
@@ -121,7 +131,7 @@ class Geometry:
         
         self._mode                = "analysis"
         self._maj_xs_method       = "discrete"
-        self._maj_mat_method      = "simple" 
+        self._maj_mat_method      = "simple" # addition of a simple_fast method
         self._access_method       = "fly"    
 
         self.T_array = None
@@ -143,6 +153,8 @@ class Geometry:
         
         self.maj_mat  : Material = None
         self.xs_maj_tables   = {}
+
+        self.reconr_maj_nuclides = {}
 
         self.reconr_e_grid          = None
         self.reconr_maj_xs_grid     = None
@@ -295,13 +307,31 @@ class Geometry:
         return self._maj_mat_method
 
     @maj_mat_method.setter
-    def maj_mat_method(self, value):
+    def maj_mat_method(self, value, err_lim: Optional[float] = 0.001, err_max: Optional[float] = 0.01):
         if self.perf_tracker_flag: self.perf.start_preprocessing()
         if self.memory_tracker_flag: self.memory.start()
         
         self._maj_mat_method = value
         if value == "maj_mat":
             self.maj_mat = self.build_majorant_all_material(verbose_maj=True)
+
+        if value == "simple_fast":
+            # calculate the majorant reconr grid for each nuclides
+            print("[Setup] Building majorant grid for each nuclide using RECONR...")
+            for nuclide in self.nuclides.values():
+                nuclide_obj, density = nuclide
+                e_grid, xs_grid, sqrt_E_min, e_spacing, window_pointers = \
+                    reconr_parallel.build_majorant_xs_nuclide(self, nuclide_obj, err_lim=err_lim, err_max= err_max)
+                self.reconr_maj_nuclides[nuclide_obj.name] = NuclideReconrGrid(
+                    e_grid         = e_grid,
+                    xs_grid        = xs_grid,
+                    sqrt_E_min     = sqrt_E_min,
+                    e_spacing      = e_spacing,
+                    window_pointers= window_pointers,
+                )       
+
+                
+
             
         if self.memory_tracker_flag: self.memory.snapshot("maj_mat_method_setup")
         if self.memory_tracker_flag: self.memory.stop()
@@ -319,10 +349,19 @@ class Geometry:
         if value not in ["fly", "reconr"]: raise ValueError("Invalid access_method")
         self._access_method = value
 
-        if value == "reconr":
-            print("[Setup] Building majorant XS grid for RECONR access method...")
+
+        if value == "reconr":  
+            if value == "reconr" and self._maj_mat_method == "simple_fast" and not self.reconr_maj_nuclides:
+                raise ValueError(
+                    "[Setup] maj_mat_method='simple_fast' requires nuclide grids to be built "
+                    "before set_access_method('reconr'). Set maj_mat_method first."
+                )  
             self.reconr_e_grid, self.reconr_maj_xs_grid, self.reconr_sqrt_E_min, self.reconr_e_spacing, self.reconr_window_pointers = reconr_parallel.build_majorant_xs_grid(self, err_lim, err_max, err_int, last_window, last_energy)
-        
+            #reset reconr_maj_nuclides to save memory since we won't use it in reconr access method
+            self.reconr_maj_nuclides = {}
+            
+
+
         if self.memory_tracker_flag: self.memory.snapshot("access_method_setup")
         if self.memory_tracker_flag: self.memory.stop()
         if self.perf_tracker_flag: self.perf.stop_preprocessing()
@@ -513,7 +552,7 @@ class Geometry:
     def calculate_nuclide_majorant_xs(self, energy: float, nuclide, temperature=None) -> float:
         if self.maj_xs_method == "vectfit":
             maj_table = self.xs_maj_tables[nuclide.name]
-            return maj.evaluate_sig_maj(nuclide, energy, maj_table)
+            return vf.evaluate_sig_maj(nuclide, energy, maj_table)
         elif self.maj_xs_method == "sqrtT_E":
             maj_table = self.xs_maj_tables[nuclide.name]
             return sqrtT_E.evaluate_majorant_cross_section(multipole_data=nuclide, E=energy, data_table=maj_table, T_range=(self.T_min, self.T_max))
@@ -523,7 +562,7 @@ class Geometry:
             return discrete.discrete_majorant(energy, T_eval=temperature, T_array=self.T_array, nuclide=nuclide)
         return 0.0
 
-    def caculate_mat_majorant_xs(self, energy: float) -> float:
+    def calculate_mat_majorant_xs(self, energy: float) -> float:
         if self.maj_mat_method == "maj_mat":
             majorant_xs = 0.0
             for nuclide_obj, density in self.maj_mat.nuclides:
@@ -535,14 +574,37 @@ class Geometry:
                 for nuclide_obj, density in mat.nuclides:
                     mat_majorant_xs += density * self.calculate_nuclide_majorant_xs(energy, nuclide_obj, mat.T)
                 if mat_majorant_xs > majorant_xs: majorant_xs = mat_majorant_xs
+        elif self.maj_mat_method == "simple_fast":
+            majorant_xs = 0.0
+            for mat in self.materials:
+                mat_majorant_xs = 0.0
+                for nuclide_obj, density in mat.nuclides:
+                    grid = self.reconr_maj_nuclides[nuclide_obj.name]
+                    if energy < grid.e_grid[0]: raise ValueError(f"Energy {energy} below grid range for nuclide {nuclide_obj.name}")
+                    if energy > grid.e_grid[-1]: raise ValueError(f"Energy {energy} above grid range for nuclide {nuclide_obj.name}")
+
+                    if energy <= grid.e_grid[0]:
+                        nuclide_majorant_xs = grid.xs_grid[0]
+                    elif energy >= grid.e_grid[-1]:
+                        nuclide_majorant_xs = grid.xs_grid[-1]
+                    else :
+                        w = int((math.sqrt(energy) - grid.sqrt_E_min) / grid.e_spacing)
+                        lo = grid.window_pointers[w]
+                        hi = grid.window_pointers[w + 1]
+                        i = bisect.bisect_right(grid.e_grid, energy, lo, hi)
+                        E1, E2 = grid.e_grid[i - 1], grid.e_grid[i]
+                        xs1, xs2 = grid.xs_grid[i - 1], grid.xs_grid[i]
+                        nuclide_majorant_xs = xs1 + (xs2 - xs1) * (energy - E1) / (E2 - E1)
+                    mat_majorant_xs += density * nuclide_majorant_xs
+                if mat_majorant_xs > majorant_xs: majorant_xs = mat_majorant_xs
         return majorant_xs
 
     def access_majorant_xs(self, energy: float) -> float:
         if self.access_method == "fly":
-            return self.caculate_mat_majorant_xs(energy)
+            return self.calculate_mat_majorant_xs(energy)
         elif self.access_method == "reconr":
-            if energy <= self.reconr_e_grid[0]: return self.reconr_maj_xs_grid[0]
-            if energy >= self.reconr_e_grid[-1]: return self.reconr_maj_xs_grid[-1]
+            if energy <= self.reconr_e_grid[0]: raise ValueError(f"Energy {energy} below grid range for reconr grid")
+            if energy >= self.reconr_e_grid[-1]: raise ValueError(f"Energy {energy} above grid range for reconr grid")
             w = int((math.sqrt(energy) - self.reconr_sqrt_E_min) / self.reconr_e_spacing)
             lo = self.reconr_window_pointers[w]
             hi = self.reconr_window_pointers[w + 1]
@@ -606,20 +668,22 @@ class Geometry:
         if mat is None: return False
         
         if self.mode == "analysis":
-            wall_t0 = time.perf_counter()
-            cpu_t0  = time.process_time()
+            
 
             if n.energy == n.last_eval_energy and mat == n.last_eval_mat:
                 n.xs = n.last_eval_xs
             else:
+                wall_t0 = time.perf_counter()
+                cpu_t0  = time.process_time()
                 n.xs = mat._xs_evaluation(n.energy)
                 n.last_eval_energy = n.energy
                 n.last_eval_mat = mat
                 n.last_eval_xs = n.xs
+                self.perf.time_xs_eval += time.perf_counter() - wall_t0
+                self.perf.cpu_time_xs_eval += time.process_time() - cpu_t0
+                self.perf.n_xs_evaluations += 1
 
-            self.perf.time_xs_eval += time.perf_counter() - wall_t0
-            self.perf.cpu_time_xs_eval += time.process_time() - cpu_t0
-            self.perf.n_xs_evaluations += 1
+           
 
             local_xs = float(n.xs[0] + n.xs[1])
             acceptance_prob = local_xs / majorant_xs
@@ -1058,6 +1122,7 @@ class Geometry:
             "time_xs_eval_s",        "cpu_time_xs_eval_s",
             "neutrons_per_second",   "rejection_fraction",
             "cpu_efficiency",
+            "n_majorant_updates", "n_xs_evaluations",
         ]
         perf_stats = {}
         for k in perf_float_keys:

@@ -32,24 +32,29 @@ from matplotlib.cm import ScalarMappable
 # ─────────────────────────────────────────────────────────────────────────────
 # Internal constants
 # ─────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Internal constants
+# ─────────────────────────────────────────────────────────────────────────────
 
-# Colour palette for material classes
 _CLASS_PALETTE: dict[str, str] = {
     "fuel":    "#D4622A",   # burnt sienna
     "water":   "#3A7FBF",   # steel blue
-    "clad":    "#8C9E9E",   # slate grey
+    "clad":    "#FF00FF",   # slate grey
     "void":    "#E8E8E8",   # light grey
     "poison":  "#6A3FA0",   # purple
-    "other":   "#BFA060",   # tan
+    "sodium":  "#F5A623",   # amber
+    "iron":    "#E60A0A",   # dark grey
+    "other":   "#000000",   # tan
 }
 
-# Hatching patterns per class (for accessibility / B&W printing)
 _CLASS_HATCH: dict[str, str] = {
     "fuel":    "",
     "water":   "//",
-    "clad":    "\\\\",
+    "clad":    "",
     "void":    "..",
     "poison":  "xx",
+    "sodium":  "",
+    "iron":    "",
     "other":   "--",
 }
 
@@ -69,21 +74,74 @@ _TEMP_CMAPS = ("plasma", "inferno", "magma", "hot", "RdYlBu_r")
 
 def classify_region(region) -> str:
     """
-    Infer a coarse material class from the region or material name.
-    Extend `_CLASS_PALETTE` to add new classes.
+    Infer a coarse material class from the region or material name,
+    and from the nuclide composition when available.
+    Covers both PWR (UO2 + H2O) and SFR (U-Pu-Zr + Na + Fe) assemblies.
     """
-    raw = (region.name + " " + region.material.name).lower()
+    raw    = (region.name + " " + region.material.name).lower()
     tokens = set(raw.replace("-", " ").replace("_", " ").split())
-    if tokens & {"fuel", "uo2", "u235", "u238", "pellet", "pin"}:
-        return "fuel"
-    if tokens & {"water", "h2o", "coolant", "moderator", "h1", "h-1"}:
-        return "water"
-    if tokens & {"clad", "cladding", "zr", "zircaloy", "zr4", "m5"}:
+
+    # ── name-based classification ────────────────────────────────────────────
+    # Sodium
+    if tokens & {"na", "na23", "sodium", "outer", "inner"}:
+        return "sodium"
+    # Iron / cladding
+    if tokens & {"fe", "fe56", "iron", "clad", "cladding",
+                 "zr", "zircaloy", "zr4", "m5"}:
+        # distinguish Fe (SFR clad) from Zr (PWR clad) — both map to "iron"/"clad"
+        if tokens & {"fe", "fe56", "iron"}:
+            return "iron"
         return "clad"
-    if tokens & {"void", "air", "gap", "vacuum"}:
-        return "void"
+    # Fuel (name-based)
+    if tokens & {"fuel", "uo2", "pellet", "pin"}:
+        return "fuel"
+    # Water / moderator
+    if tokens & {"water", "h2o", "coolant", "moderator"}:
+        return "water"
+    # Poison
     if tokens & {"poison", "b4c", "boron", "gd", "gadolinium", "hafnium"}:
         return "poison"
+    # Void
+    if tokens & {"void", "air", "gap", "vacuum"}:
+        return "void"
+
+    # ── nuclide-based fallback ───────────────────────────────────────────────
+    nuclides = getattr(region.material, "nuclides", None)
+    if nuclides:
+        # normalise to a flat set of nuclide name strings
+        if isinstance(nuclides, dict):
+            nuc_names = {str(k).lower() for k in nuclides.keys()}
+        elif isinstance(nuclides, (list, tuple)) and nuclides:
+            first = nuclides[0]
+            if isinstance(first, (list, tuple)):
+                nuc_names = {str(n).lower() for n, _ in nuclides}
+            else:
+                nuc_names = {str(n).lower() for n in nuclides}
+        else:
+            nuc_names = set()
+
+        # sodium
+        if nuc_names & {"na23", "na-23"}:
+            return "sodium"
+        # iron
+        if nuc_names & {"fe56", "fe-56", "fe54", "fe57", "fe58"}:
+            return "iron"
+        # SFR metallic fuel: contains Pu or Zr alongside U
+        if nuc_names & {"pu239", "pu-239", "pu238", "pu240",
+                        "pu241", "pu242", "am241"}:
+            return "fuel"
+        # Zr cladding
+        if nuc_names & {"zr90", "zr-90", "zr91", "zr92", "zr94", "zr96"}:
+            return "clad"
+        # PWR fuel
+        if nuc_names & {"u235", "u-235", "u238", "u-238"}:
+            if nuc_names & {"o16", "o-16"}:
+                return "fuel"   # UO2
+            return "fuel"       # metallic U
+        # water
+        if nuc_names & {"h1", "h-1", "h2o"}:
+            return "water"
+
     return "other"
 
 
@@ -580,15 +638,24 @@ def print_summary(geometry) -> None:
 
                 # approximate atomic masses for weight-fraction calculation
                 _A = {
-                    "H1": 1.008,   "H-1": 1.008,
-                    "H2": 2.014,   "D":   2.014,
-                    "O16": 15.999, "O-16": 15.999, "O": 15.999,
-                    "U235": 235.044, "U-235": 235.044,
-                    "U238": 238.051, "U-238": 238.051,
-                    "ZR90": 89.905,  "ZR91": 90.906, "ZR92": 91.905,
-                    "ZR94": 93.906,  "ZR96": 95.908,
-                    "B10": 10.013,   "B11": 11.009,
-                }
+                                    "H1": 1.008,    "H-1": 1.008,
+                                    "H2": 2.014,    "D":   2.014,
+                                    "O16": 15.999,  "O-16": 15.999,  "O": 15.999,
+                                    "U235": 235.044, "U-235": 235.044,
+                                    "U238": 238.051, "U-238": 238.051,
+                                    "PU238": 238.050, "PU-238": 238.050,
+                                    "PU239": 239.052, "PU-239": 239.052,
+                                    "PU240": 240.054, "PU-240": 240.054,
+                                    "PU241": 241.057, "PU-241": 241.057,
+                                    "PU242": 242.059, "PU-242": 242.059,
+                                    "AM241": 241.057, "AM-241": 241.057,
+                                    "ZR90": 89.905,  "ZR91": 90.906,
+                                    "ZR92": 91.905,  "ZR94": 93.906,  "ZR96": 95.908,
+                                    "NA23": 22.990,  "NA-23": 22.990,
+                                    "FE54": 53.940,  "FE56": 55.935,
+                                    "FE57": 56.935,  "FE58": 57.933,
+                                    "B10": 10.013,   "B11": 11.009,
+                                }
                 def _mass(name: str) -> float:
                     key = name.upper().replace("-", "")
                     if key in _A:
