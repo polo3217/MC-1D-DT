@@ -20,7 +20,7 @@ import bisect
 from multiprocessing import Pool
 import functools
 
-sys.path.append('/home/paule/open_mc_projects/windowed_multipole/02_working_notebook_vectfit')
+sys.path.append('/home/paule/open_mc_projects/MC-1D_DT/structured_code/src')
 
 from dataclasses import dataclass, field
 import time
@@ -32,6 +32,7 @@ from typing import List, Optional
 import pandas as pd
 import numpy as np
 import openmc
+from openmc.data import Tabulated1D
 
 import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
@@ -56,12 +57,33 @@ global  valid_nuclides_list
 global  xs_dir
 global xs_dir_sqrtT_E
 global xs_dir_vectfit
+global nuclide_objects
+global temps_endf
 
-valid_nuclides_name = [ "U238", "U235","Pu238", "Pu239","Pu240", "Pu241", "Pu242", "Am241", "Cnat", "O16", "H1", "Fe56", "Xe135", "Na23",   "Zr90"]    
-valid_nuclides_list = [ '092238', '092235', '094238', '094239', '094240', '095241', '094241', '094242', '006000',  '008016', '001001','026056','054135', '011023',   '040090']
+
+#load valid nuclides from the hdf5 files generated in valid_nuclides.ipynb
+valid_nuclides = pd.read_hdf('src/valid_nuclides.h5', key='nuclides')
+valid_nuclides_name = valid_nuclides['nuclide'].tolist()
+valid_nuclides_name = np.array(valid_nuclides_name)
+
 xs_dir = '/home/paule/open_mc_projects/xs_lib/endfb-vii.1-hdf5/wmp'
 xs_dir_sqrtT_E = '/home/paule/open_mc_projects/MC-1D_DT/structured_code/src/sqrtT_E_data'
 xs_dir_vectfit = '/home/paule/open_mc_projects/MC-1D_DT/structured_code/src/vectfit_data'
+xml_path = '/home/paule/open_mc_projects/xs_lib/endfb-vii.1-hdf5/cross_sections.xml'
+lib = openmc.data.DataLibrary.from_xml(xml_path)
+
+nuclide_objects = {}
+# Build the sorted list of ENDF temperatures available in the library.
+# Done once at module load — all nuclides in ENDF/B-VII.1 share the same
+# temperature grid, so we read it from the first available neutron entry.
+# Build the sorted list of ENDF temperatures available in the library.
+# Done once at module load using a nuclide guaranteed to be in ENDF/B-VII.1.
+# All nuclides share the same temperature grid so any one of them will do.
+_endf_ref_entry = lib.get_by_material('U238', data_type='neutron')
+temps_endf = sorted(
+    float(t.replace('K', ''))
+    for t in openmc.data.IncidentNeutron.from_hdf5(_endf_ref_entry['path']).temperatures
+)
 
 
 # ==========================================
@@ -74,30 +96,116 @@ class Material:
         for i, pair in enumerate(self.nuclides):
             print(f"[Material] Processing nuclide pair: {pair[0]} (Density: {pair[1]:.2e})")
             nuclide_name = pair[0]
-            nuclide_density = pair[1]
-            
+            nuclide_density = pair[1] *1.0e-24 # convert from atoms/b-cm to atoms/cm³
+            self.nuclides[i] = (nuclide_name, nuclide_density)
             if nuclide_name not in valid_nuclides_name:
                 raise ValueError(f"Nuclide '{nuclide_name}' not in valid nuclides list.")
             
-            index = valid_nuclides_name.index(nuclide_name)
+            """index = valid_nuclides_name.index(nuclide_name)
             nuclide_id = valid_nuclides_list[index]                         
             file_h5 = str(nuclide_id) + '.h5'
             
             nuclide_obj = openmc.data.WindowedMultipole.from_hdf5(os.path.join(xs_dir, file_h5))
-            self.nuclides[i] = (nuclide_obj, nuclide_density*1.0e-24)
+            """
+            # CHANGE : we will only store the name, the nuclide object are saved as global variables to save memory since they can be shared among materials
+            
+            endf_entry = lib.get_by_material(nuclide_name, data_type='neutron')
+            wmp_entry  = lib.get_by_material(nuclide_name, data_type='wmp')
+            endf_obj = openmc.data.IncidentNeutron.from_hdf5(endf_entry['path']) if endf_entry else None
+            if endf_obj is not None:
+                endf_dict = {}
+                for mt, reaction in [(1,'total'), (27,'absorption'), (18,'fission')]:
+                    endf_dict[mt] = {}
+                    for t in endf_obj.temperatures:
+                        endf_dict[mt][t] = Tabulated1D(endf_obj[mt].xs[t].x, endf_obj[mt].xs[t].y)
+                        endf_dict[mt]['reaction'] = reaction
+
+
+            
+
+            nuclide_objects[nuclide_name] = {
+                'endf': endf_dict if endf_entry else None,
+                'wmp' : openmc.data.WindowedMultipole.from_hdf5(wmp_entry['path']) if wmp_entry  else None,
+ 
+            }
     
-        self.T        = T
+        self._T        = T
         self.total_density = float(np.sum([n[1] for n in self.nuclides]))
         self.xs       = None
+        self.endf_tlow , self.endf_thigh, self.alpha = self.update_endf_param()
+        
 
-    def _xs_evaluation(self, energy: float) -> np.ndarray:
-        """Return [scatter, absorb, fission] in cm⁻¹."""
+
+    @property
+    def T(self):
+        return self._T
+    @T.setter
+    def T(self, value):
+        self._T = value
+        self.endf_tlow , self.endf_thigh, self.alpha = self.update_endf_param()
+
+    def update_endf_param(self, t:Optional[float] = None):
+        
+        if t is not None:
+            T = t
+        else:
+            T = self.T
+        if T <= temps_endf[0]:
+            print(f"[Material] Warning: Temperature {T} K below ENDF data range. Using the lowest temperature.")
+            return temps_endf[0], temps_endf[1], 0.0
+        elif T >= temps_endf[-1]:
+            print(f"[Material] Warning: Temperature {T} K above ENDF data range. Using the highest temperature.")
+            return temps_endf[-2], temps_endf[-1], 1.0
+        else:
+            for i in range(1, len(temps_endf)):
+                if T < temps_endf[i]:
+                    t_low = temps_endf[i-1]
+                    t_high = temps_endf[i]
+                    alpha = (T - t_low) / (t_high - t_low)
+                    return t_low, t_high, alpha
+        raise ValueError("Temperature out of bounds for ENDF data.")
+
+
+
+    def _xs_evaluation(self, energy: float, temperature:Optional[float] = None) -> np.ndarray:
+        """Return [total, absorption, fission] in cm⁻¹."""
         xs_total = np.zeros(3)
-        for nuclide_obj, density in self.nuclides:
-            xs = np.array(nuclide_obj(energy, self.T))
+
+        for nuclide_name, density in self.nuclides:
+            obj  = nuclide_objects[nuclide_name]
+            wmp  = obj['wmp']
+            endf = obj['endf']
+
+            #if in wmp range
+            if wmp is not None and wmp.E_min <= energy <= wmp.E_max:
+
+                total, absorption, fission = wmp(energy, self.T)
+                xs = np.array([total, absorption, fission])
+                
+            # if not in wmp range, use endf data with linear interpolation in sqrt(T) between the two closest temperatures
+            else:
+                def _endf_xs(mt:int, energy: float = energy, temperature:Optional[float] = None) -> float:
+                    if temperature is None:
+                        temperature = self.T
+                    xs_low = endf[mt][f'{self.endf_tlow:.0f}K'](energy)
+                    xs_high = endf[mt][f'{self.endf_thigh:.0f}K'](energy)
+                    xs = xs_low + self.alpha * (xs_high - xs_low)
+                    return xs
+                    
+               
+                total      = _endf_xs(1,energy, temperature)
+                absorption = _endf_xs(27,energy, temperature)
+                fission    = _endf_xs(18,energy, temperature)   # returns 0.0 if MT=18 not present
+                scattering   = total - absorption 
+                xs = np.array([scattering, absorption, fission])
+            
             xs_total += density * xs
+
         self.xs = xs_total
         return xs_total
+    
+
+
 
 @dataclass
 class Region:
@@ -142,6 +250,7 @@ class Geometry:
         self.cutoff_energy = 1.0e-5  
 
         self._materials      = []
+        #multipole nuclides are stored as a dict of name: (nuclide_obj, density) for easy access during majorant calculation
         self._nuclides       = {}
         self.boundaries      = [0.0]  
         self._regions        = []
@@ -261,7 +370,7 @@ class Geometry:
         if self.perf_tracker_flag: self.perf.start_preprocessing()
         if self.memory_tracker_flag: self.memory.start()
         
-        if method not in ["serpent", "vectfit", "sqrtT_E", "group", "discrete"]:
+        if method not in ["serpent", "vectfit", "sqrtT_E", "group", "discrete", "endf_lookup"]:
             raise ValueError("Invalid maj_xs_method")
         self._maj_xs_method = method
 
@@ -306,8 +415,8 @@ class Geometry:
     def maj_mat_method(self):
         return self._maj_mat_method
 
-    @maj_mat_method.setter
-    def maj_mat_method(self, value, err_lim: Optional[float] = 0.001, err_max: Optional[float] = 0.01):
+
+    def set_maj_mat_method(self, value: str, err_lim: Optional[float] = 0.001, err_max: Optional[float] = 0.01, last_window: Optional[int] = None, last_energy: Optional[float] = None):
         if self.perf_tracker_flag: self.perf.start_preprocessing()
         if self.memory_tracker_flag: self.memory.start()
         
@@ -319,18 +428,30 @@ class Geometry:
             # calculate the majorant reconr grid for each nuclides
             print("[Setup] Building majorant grid for each nuclide using RECONR...")
             for nuclide in self.nuclides.values():
-                nuclide_obj, density = nuclide
-                e_grid, xs_grid, sqrt_E_min, e_spacing, window_pointers = \
-                    reconr_parallel.build_majorant_xs_nuclide(self, nuclide_obj, err_lim=err_lim, err_max= err_max)
-                self.reconr_maj_nuclides[nuclide_obj.name] = NuclideReconrGrid(
-                    e_grid         = e_grid,
-                    xs_grid        = xs_grid,
-                    sqrt_E_min     = sqrt_E_min,
-                    e_spacing      = e_spacing,
-                    window_pointers= window_pointers,
-                )       
+                nuclide_name, density = nuclide
 
-                
+                # CHANGE: unpack 6-tuple — build_majorant_xs_nuclide now returns
+                # pp_counts as its 6th element (same pattern as build_majorant_xs_grid)
+                (e_grid, xs_grid, sqrt_E_min, e_spacing, window_pointers,
+                 pp_counts) = reconr_parallel.build_majorant_xs_nuclide(
+                     self, nuclide_name, err_lim=err_lim, err_max=err_max, last_energy=last_energy, last_window=last_window)
+
+                self.reconr_maj_nuclides[nuclide_name] = NuclideReconrGrid(
+                    e_grid          = e_grid,
+                    xs_grid         = xs_grid,
+                    sqrt_E_min      = sqrt_E_min,
+                    e_spacing       = e_spacing,
+                    window_pointers = window_pointers,
+                )
+
+                # CHANGE: accumulate per-nuclide preprocessing counts into perf.
+                # Each nuclide's grid build is additive — += ensures all nuclides
+                # in the loop are counted, not just the last one.
+                if self.perf_tracker_flag:
+                    self.perf.n_majorant_updates_wmp_pp  += pp_counts["n_wmp"]
+                    self.perf.n_majorant_updates_endf_pp += pp_counts["n_endf"]
+                    self.perf.time_majorant_wmp_pp       += pp_counts["time_wmp"]
+                    self.perf.time_majorant_endf_pp      += pp_counts["time_endf"]
 
             
         if self.memory_tracker_flag: self.memory.snapshot("maj_mat_method_setup")
@@ -353,11 +474,36 @@ class Geometry:
         if value == "reconr":  
             if value == "reconr" and self._maj_mat_method == "simple_fast" and not self.reconr_maj_nuclides:
                 raise ValueError(
-                    "[Setup] maj_mat_method='simple_fast' requires nuclide grids to be built "
+                    "[Setup]  CAREFUL !!!!! maj_mat_method='simple_fast' requires nuclide grids to be built "
                     "before set_access_method('reconr'). Set maj_mat_method first."
-                )  
-            self.reconr_e_grid, self.reconr_maj_xs_grid, self.reconr_sqrt_E_min, self.reconr_e_spacing, self.reconr_window_pointers = reconr_parallel.build_majorant_xs_grid(self, err_lim, err_max, err_int, last_window, last_energy)
-            #reset reconr_maj_nuclides to save memory since we won't use it in reconr access method
+                )
+
+            # CHANGE: unpack the 6th return value (pp_counts) from reconr_parallel.
+            # reconr_parallel now returns counts of WMP and ENDF evaluations made
+            # during the grid build.  Workers run in subprocesses so their local
+            # perf trackers are discarded; instead the counts are returned
+            # explicitly and assigned here in the main process.
+            (self.reconr_e_grid,
+             self.reconr_maj_xs_grid,
+             self.reconr_sqrt_E_min,
+             self.reconr_e_spacing,
+             self.reconr_window_pointers,
+             pp_counts) = reconr_parallel.build_majorant_xs_grid(
+                 self, err_lim, err_max, err_int, last_window, last_energy)
+
+            # CHANGE: only record pp_counts when maj_mat_method != "simple_fast".
+            # With simple_fast, the real WMP/ENDF preprocessing work was already
+            # counted during set_maj_mat_method (per-nuclide grid builds).
+            # build_majorant_xs_grid in this case only interpolates from the
+            # already-built nuclide grids — those are not WMP/ENDF evaluations
+            # and should not be double-counted.
+            if self.perf_tracker_flag and self._maj_mat_method != "simple_fast":
+                self.perf.n_majorant_updates_wmp_pp  += pp_counts["n_wmp"]
+                self.perf.n_majorant_updates_endf_pp += pp_counts["n_endf"]
+                self.perf.time_majorant_wmp_pp       += pp_counts["time_wmp"]
+                self.perf.time_majorant_endf_pp      += pp_counts["time_endf"]
+
+            # reset reconr_maj_nuclides to save memory
             self.reconr_maj_nuclides = {}
             
 
@@ -424,9 +570,9 @@ class Geometry:
     def rebuild_nuclides(self):
         self._nuclides = {}
         for mat in self.materials:
-            for nuclide_obj, density in mat.nuclides:
-                if nuclide_obj.name not in self._nuclides:
-                    self._nuclides[nuclide_obj.name] = (nuclide_obj, density)
+            for nuclide_name, density in mat.nuclides:
+                if nuclide_name not in self._nuclides:
+                    self._nuclides[nuclide_name] = (nuclide_name, density)
 
     def _rebuild_boundaries(self):
         if not self._regions:
@@ -450,8 +596,8 @@ class Geometry:
         
         self._materials.append(mat)
         for nuclide in mat.nuclides:
-            if nuclide[0].name not in self._nuclides:
-                self._nuclides[nuclide[0].name] = nuclide
+            if nuclide[0] not in self._nuclides:
+                self._nuclides[nuclide[0]] = nuclide
                 
         if self.memory_tracker_flag:
             self.memory.snapshot(f"add_material_{mat.name}")
@@ -517,17 +663,17 @@ class Geometry:
     def build_majorant_all_material(self, verbose_maj: bool = False) -> Material:
         nuclides = {}
         for mat in self.materials:
-            for nuclide_obj, density in mat.nuclides:
-                if nuclide_obj.name not in nuclides:
-                    nuclides[nuclide_obj.name] = (nuclide_obj, density)
+            for nuclide_name, density in mat.nuclides:
+                if nuclide_name not in nuclides:
+                    nuclides[nuclide_name] = (nuclide_name, density)
                 else:
-                    _, existing_density = nuclides[nuclide_obj.name]
-                    nuclides[nuclide_obj.name] = (nuclide_obj, max(existing_density, density))
+                    _, existing_density = nuclides[nuclide_name]
+                    nuclides[nuclide_name] = (nuclide_name, max(existing_density, density))
         
         mat_maj = object.__new__(Material)
         mat_maj.name = "maj_mat"
         mat_maj.xs = None
-        mat_maj.nuclides = [(nuclide_obj, density) for nuclide_obj, density in nuclides.values()]
+        mat_maj.nuclides = [(nuclide_name, density) for nuclide_name, density in nuclides.values()]
         mat_maj.total_density = float(sum(d for _, d in mat_maj.nuclides))
         return mat_maj
 
@@ -549,12 +695,63 @@ class Geometry:
         self.boundary_conditions["right"] = right
         print(f"[Setup] Boundary conditions set: left='{left}', right='{right}'")
 
-    def calculate_nuclide_majorant_xs(self, energy: float, nuclide, temperature=None) -> float:
+
+    def endf_xs_mt(self, endf_obj, mt: int, energy: float, temperature: float) -> float:
+        t_low  = max((t for t in temps_endf if t <= temperature), default=temps_endf[0])
+        t_high = min((t for t in temps_endf if t >= temperature), default=temps_endf[-1])
+        try:
+            if t_low == t_high:
+                xs = endf_obj[mt][f'{t_low:.0f}K'](energy)  # new custom API for ENDF data access
+                return max(0.0, xs)
+            xs_lo = endf_obj[mt][f'{t_low:.0f}K'](energy)   # new custom API for ENDF data access
+            xs_hi = endf_obj[mt][f'{t_high:.0f}K'](energy)  # new custom API for ENDF data access
+            alpha = (temperature - t_low) / (t_high - t_low)
+            return max(0.0, (1 - alpha) * xs_lo + alpha * xs_hi)
+        except KeyError:
+            # MT reaction not present for this nuclide (e.g. MT=18 fission for non-fissile)
+            return 0.0
+
+    def endf_xs(self, endf_obj, energy: float, temperature: float) -> np.ndarray:
+        total      = self.endf_xs_mt(endf_obj, 1,   energy, temperature)  # MT=1 total
+        absorption = self.endf_xs_mt(endf_obj, 27, energy, temperature)  # MT=27 total capture
+        fission    = self.endf_xs_mt(endf_obj, 18,  energy, temperature)  # MT=18 fission (0 if absent)
+        scattering  = total - absorption
+        return np.array([scattering, absorption, fission])
+        
+    
+    def _nuclide_xs_evaluation(self, nuclide_name: str, energy: float, temperature: float) -> np.ndarray:
+        ## only for analysis mode, validation mode uses pre-tabulated group xs
+        if self.mode != "analysis":
+            raise RuntimeError("_nuclide_xs_evaluation is only for analysis mode")
+        nuclide_obj_wmp = nuclide_objects[nuclide_name]['wmp']
+        
+        #if in outside wmp energy range
+        if energy < nuclide_obj_wmp.E_min or energy > nuclide_obj_wmp.E_max:
+            nuclide_obj = nuclide_objects[nuclide_name]['endf']
+            return self.endf_xs(nuclide_obj, energy, temperature)
+        else:
+            nuclide_obj = nuclide_obj_wmp
+            xs = nuclide_obj(energy, temperature)
+            return xs
+
+    def calculate_nuclide_majorant_xs(self, energy: float, nuclide_name, temperature=None) -> float:
+        nuclide_obj_wmp = nuclide_objects[nuclide_name]['wmp']
+        if energy < nuclide_obj_wmp.E_min or energy > nuclide_obj_wmp.E_max or self.maj_xs_method == "endf_lookup":
+            nuclide = nuclide_objects[nuclide_name]['endf']
+            maj_xs = 0.0
+            mt_total = 1
+            for temperature in temps_endf:
+                xs = nuclide[mt_total][f'{temperature:.0f}K'](energy)  # correct OpenMC API
+                if xs > maj_xs: maj_xs = xs
+            return maj_xs
+
+        nuclide = nuclide_objects[nuclide_name]['wmp']
+
         if self.maj_xs_method == "vectfit":
-            maj_table = self.xs_maj_tables[nuclide.name]
+            maj_table = self.xs_maj_tables[nuclide_name]
             return vf.evaluate_sig_maj(nuclide, energy, maj_table)
         elif self.maj_xs_method == "sqrtT_E":
-            maj_table = self.xs_maj_tables[nuclide.name]
+            maj_table = self.xs_maj_tables[nuclide_name]
             return sqrtT_E.evaluate_majorant_cross_section(multipole_data=nuclide, E=energy, data_table=maj_table, T_range=(self.T_min, self.T_max))
         elif self.maj_xs_method == "serpent":
             return srp.find_majorant_xs_rothenstein(nuclide, energy, T_min=self.T_min, T_max=self.T_max, Q=self.Q, n_points_per_window=self.n_points_per_window)
@@ -565,23 +762,23 @@ class Geometry:
     def calculate_mat_majorant_xs(self, energy: float) -> float:
         if self.maj_mat_method == "maj_mat":
             majorant_xs = 0.0
-            for nuclide_obj, density in self.maj_mat.nuclides:
-                majorant_xs += density * self.calculate_nuclide_majorant_xs(energy, nuclide_obj)
+            for nuclide_name, density in self.maj_mat.nuclides:
+                majorant_xs += density * self.calculate_nuclide_majorant_xs(energy, nuclide_name)
         elif self.maj_mat_method == "simple":
             majorant_xs = 0.0
             for mat in self.materials:
                 mat_majorant_xs = 0.0
-                for nuclide_obj, density in mat.nuclides:
-                    mat_majorant_xs += density * self.calculate_nuclide_majorant_xs(energy, nuclide_obj, mat.T)
+                for nuclide_name, density in mat.nuclides:
+                    mat_majorant_xs += density * self.calculate_nuclide_majorant_xs(energy, nuclide_name, mat.T)
                 if mat_majorant_xs > majorant_xs: majorant_xs = mat_majorant_xs
         elif self.maj_mat_method == "simple_fast":
             majorant_xs = 0.0
             for mat in self.materials:
                 mat_majorant_xs = 0.0
-                for nuclide_obj, density in mat.nuclides:
-                    grid = self.reconr_maj_nuclides[nuclide_obj.name]
-                    if energy < grid.e_grid[0]: raise ValueError(f"Energy {energy} below grid range for nuclide {nuclide_obj.name}")
-                    if energy > grid.e_grid[-1]: raise ValueError(f"Energy {energy} above grid range for nuclide {nuclide_obj.name}")
+                for nuclide_name, density in mat.nuclides:
+                    grid = self.reconr_maj_nuclides[nuclide_name]
+                    if energy < grid.e_grid[0]: raise ValueError(f"Energy {energy} below grid range for nuclide {nuclide_name}")
+                    if energy > grid.e_grid[-1]: raise ValueError(f"Energy {energy} above grid range for nuclide {nuclide_name}")
 
                     if energy <= grid.e_grid[0]:
                         nuclide_majorant_xs = grid.xs_grid[0]
@@ -630,24 +827,59 @@ class Geometry:
             majorant_xs = 2.0 * actual_max_xs
         else:
             majorant_xs = self.access_majorant_xs(energy)
-            if self.majorant_log_flag:
-                actual_max_xs = 0.0
-                limiting_mat_name = ""
-                for mat in self.materials:
-                    xs_arr = mat._xs_evaluation(energy)
-                    total  = float(xs_arr[0] + xs_arr[1])
-                    if total > actual_max_xs:
-                        actual_max_xs = total
-                        limiting_mat_name = mat.name
 
-        if self.majorant_log_flag:
-            self._majorant_log.append(MajorantRecord(energy=energy, value=majorant_xs, limiting_material=limiting_mat_name, actual_max_xs=actual_max_xs))
-
+        # CHANGE: stop the perf timer immediately after the majorant lookup,
+        # BEFORE the majorant_log eval block. Previously the timer wrapped both
+        # access_majorant_xs() AND mat._xs_evaluation() inside the log block,
+        # so all ENDF XS evaluation cost was incorrectly attributed to the
+        # majorant timer — inflating it and making the WMP/ENDF split wrong.
         if self.perf_tracker_flag:
-            self.perf.n_majorant_updates += 1
-            self.perf.time_majorant += time.perf_counter() - wall_t0
-            self.perf.cpu_time_majorant += time.process_time() - cpu_t0
-        
+            wall_dt = time.perf_counter() - wall_t0
+            cpu_dt  = time.process_time()  - cpu_t0
+
+            # CHANGE: with access_method='reconr' the lookup is a pure grid
+            # bisect+interpolation — it calls neither WMP nor ENDF at runtime.
+            # Charge time to the wmp bucket (natural "not-ENDF" slot for a
+            # WMP-derived grid) so that time_majorant = wmp + endf is correct.
+            if self.access_method == "reconr":
+                self.perf.n_majorant_updates_wmp += 1
+                self.perf.time_majorant_wmp      += wall_dt
+                self.perf.cpu_time_majorant_wmp  += cpu_dt
+            else:
+                # fly mode: attribute based on whether energy is in WMP window
+                in_wmp_range = any(
+                    nuclide_objects[name]['wmp'] is not None
+                    and nuclide_objects[name]['wmp'].E_min <= energy <= nuclide_objects[name]['wmp'].E_max
+                    for name, _ in self._nuclides.values()
+                )
+                if in_wmp_range:
+                    self.perf.n_majorant_updates_wmp  += 1
+                    self.perf.time_majorant_wmp       += wall_dt
+                    self.perf.cpu_time_majorant_wmp   += cpu_dt
+                else:
+                    self.perf.n_majorant_updates_endf += 1
+                    self.perf.time_majorant_endf      += wall_dt
+                    self.perf.cpu_time_majorant_endf  += cpu_dt
+
+        # CHANGE: majorant log eval is now fully outside the perf timer.
+        # mat._xs_evaluation() can be expensive (ENDF binary search) and was
+        # the source of inflated majorant timing when majorant_log_flag=True.
+        if self.majorant_log_flag:
+            actual_max_xs = 0.0
+            limiting_mat_name = ""
+            for mat in self.materials:
+                xs_arr = mat._xs_evaluation(energy)
+                total  = float(xs_arr[0] + xs_arr[1])
+                if total > actual_max_xs:
+                    actual_max_xs = total
+                    limiting_mat_name = mat.name
+            self._majorant_log.append(MajorantRecord(
+                energy            = energy,
+                value             = majorant_xs,
+                limiting_material = limiting_mat_name,
+                actual_max_xs     = actual_max_xs,
+            ))
+
         return majorant_xs
 
     def _sample_neutron_distance(self, majorant_xs: float) -> float:
@@ -668,7 +900,16 @@ class Geometry:
         if mat is None: return False
         
         if self.mode == "analysis":
-            
+
+            # CHANGE: compute in_wmp_range once, outside the cache-hit branch,
+            # so it is always defined when the wrong-majorant block below
+            # references it — previously it was only set inside the else branch,
+            # causing a NameError on cache hits.
+            in_wmp_range = any(
+                nuclide_objects[name]['wmp'] is not None
+                and nuclide_objects[name]['wmp'].E_min <= n.energy <= nuclide_objects[name]['wmp'].E_max
+                for name, _ in mat.nuclides
+            )
 
             if n.energy == n.last_eval_energy and mat == n.last_eval_mat:
                 n.xs = n.last_eval_xs
@@ -679,17 +920,33 @@ class Geometry:
                 n.last_eval_energy = n.energy
                 n.last_eval_mat = mat
                 n.last_eval_xs = n.xs
-                self.perf.time_xs_eval += time.perf_counter() - wall_t0
-                self.perf.cpu_time_xs_eval += time.process_time() - cpu_t0
-                self.perf.n_xs_evaluations += 1
-
-           
+                wall_dt = time.perf_counter() - wall_t0
+                cpu_dt  = time.process_time()  - cpu_t0
+                # CHANGE: in_wmp_range already computed above — no need to
+                # recompute here. Attribution is correct for both fly and reconr:
+                # for reconr the XS evaluation still goes through _xs_evaluation
+                # which uses WMP or ENDF depending on energy, so energy-range
+                # attribution is correct for the local XS timer.
+                if in_wmp_range:
+                    self.perf.time_xs_eval_wmp     += wall_dt
+                    self.perf.cpu_time_xs_eval_wmp += cpu_dt
+                    self.perf.n_xs_evaluations_wmp += 1
+                else:
+                    self.perf.time_xs_eval_endf     += wall_dt
+                    self.perf.cpu_time_xs_eval_endf += cpu_dt
+                    self.perf.n_xs_evaluations_endf += 1
 
             local_xs = float(n.xs[0] + n.xs[1])
             acceptance_prob = local_xs / majorant_xs
             if acceptance_prob > 1.0:
-                self.wrong_majorant_score += 1
+                self.wrong_majorant_score       += 1
                 self.wrong_majorant_error_score += acceptance_prob - 1.0
+                if in_wmp_range:
+                    self.perf.n_wrong_majorant_wmp       += 1
+                    self.perf.n_wrong_majorant_error_wmp += acceptance_prob - 1.0
+                else:
+                    self.perf.n_wrong_majorant_endf       += 1
+                    self.perf.n_wrong_majorant_error_endf += acceptance_prob - 1.0
                 acceptance_prob = 1.0
 
             if random.random() < acceptance_prob:
@@ -708,9 +965,9 @@ class Geometry:
             fission_xs = cell_df['fission'].sum() if 'fission' in cell_df.columns else 0.0
             n.xs = np.array([scatter_xs, absorption_xs, fission_xs])
 
-            self.perf.time_xs_eval += time.perf_counter() - wall_t0
-            self.perf.cpu_time_xs_eval += time.process_time() - cpu_t0
-            self.perf.n_xs_evaluations += 1
+            self.perf.time_xs_eval_endf     += time.perf_counter() - wall_t0
+            self.perf.cpu_time_xs_eval_endf += time.process_time() - cpu_t0
+            self.perf.n_xs_evaluations_endf += 1
 
             local_xs = float(n.xs[0] + n.xs[1])
             acceptance_prob = local_xs / majorant_xs
@@ -724,10 +981,12 @@ class Geometry:
         if n.energy < self.cutoff_energy: return "absorption"
         scatter_prob = n.xs[0] / (n.xs[0] + n.xs[1])
         return "scatter" if random.random() < scatter_prob else "absorption"
+    
+    
 
     def _scattering_neutron(self, n: Neutron):
         if self.mode == "analysis":
-            contributions = [density * nuclide_obj(n.energy, n.material.T)[0] for nuclide_obj, density in n.material.nuclides]
+            contributions = [density * self._nuclide_xs_evaluation(nuclide_name, n.energy, n.material.T)[0] for nuclide_name, density in n.material.nuclides]
             total_prob = sum(contributions)
             rand_val = random.random() * total_prob
             cum_sum = 0.0
@@ -737,7 +996,9 @@ class Geometry:
                 if rand_val <= cum_sum:
                     idx = i
                     break
-            A = n.material.nuclides[idx][0].sqrtAWR ** 2
+            nuclide_name = n.material.nuclides[idx][0]
+
+            A = nuclide_objects[nuclide_name]['wmp'].sqrtAWR ** 2 
 
         elif self.mode == "validation":
             A = n.material.nuclides[0][0].sqrtAWR ** 2
@@ -903,8 +1164,16 @@ class Geometry:
 
             # Evaluate Delta-Tracking Acceptance
             if self._evaluate_acceptance(n, majorant_xs):
-                self.acception_score        += 1
-                self.perf.n_real_collisions += 1
+                self.acception_score += 1
+                _in_wmp = n.material is not None and any(
+                    nuclide_objects[name]['wmp'] is not None
+                    and nuclide_objects[name]['wmp'].E_min <= n.energy <= nuclide_objects[name]['wmp'].E_max
+                    for name, _ in n.material.nuclides
+                )
+                if _in_wmp:
+                    self.perf.n_real_collisions_wmp += 1
+                else:
+                    self.perf.n_real_collisions_endf += 1
 
                 local_xs  = float(n.xs[0] + n.xs[1])
                 mat_name  = n.material.name if n.material else ""
@@ -975,8 +1244,19 @@ class Geometry:
 
             else:
                 # Virtual collision
-                self.rejection_score            += 1
-                self.perf.n_virtual_collisions  += 1
+                self.rejection_score += 1
+                _mat_v   = self._get_material_at(n.position[0])
+                _in_wmp_v = _mat_v is not None and any(
+                    nuclide_objects[name]['wmp'] is not None
+                    and nuclide_objects[name]['wmp'].E_min <= n.energy <= nuclide_objects[name]['wmp'].E_max
+                    for name, _ in _mat_v.nuclides
+                )
+                if _in_wmp_v:
+                    self.perf.n_virtual_collisions_wmp += 1
+                else:
+                    self.perf.n_virtual_collisions_endf += 1
+
+                
                 if self.history_flag:
                     hist.n_virtual                 += 1
 
@@ -1052,8 +1332,6 @@ class Geometry:
                 result = self._run_neutron(active_neutron, neutron_id=nid, track_neutron=track_neutron)
                 if track_neutron: tracks.append(result)
 
-        self.perf.n_wrong_majorant            = self.wrong_majorant_score
-        self.perf.n_wrong_majorant_mean_error = self.wrong_majorant_error_score
         self.perf.stop()
 
         if self.memory_tracker_flag:

@@ -1,6 +1,7 @@
 import openmc
 import numpy as np
 from openmc.data import K_BOLTZMANN
+import src.geometry_classes as geom
 
 def find_energy_range(nuclide, E, T_min, T_max, Q):
     E_min = (np.sqrt(E) - Q * np.sqrt(K_BOLTZMANN * (T_max-T_min))/nuclide.sqrtAWR)**2
@@ -10,6 +11,7 @@ def find_energy_range(nuclide, E, T_min, T_max, Q):
 
 
 def find_majorant_xs_rothenstein(nuclide, E, Q=2, T_min=293, T_max=3000, n_points_per_window=100):
+
     E_min, E_max = find_energy_range(nuclide, E, T_min, T_max, Q)
 
     Energies = np.linspace(E_min, E_max, n_points_per_window)

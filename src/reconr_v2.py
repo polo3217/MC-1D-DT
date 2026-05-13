@@ -5,6 +5,7 @@ import os
 import sys
 import math
 import bisect
+import src.geometry_classes as geom
 
 sys.path.append('/home/paule/open_mc_projects/windowed_multipole/02_working_notebook_vectfit')
 
@@ -13,7 +14,7 @@ sys.path.append('/home/paule/open_mc_projects/windowed_multipole/02_working_note
 
 def build_majorant_xs_nuclide(
         geometry,
-        nuclide,
+        nuclide_name,
         err_lim = 0.001,
         err_max = 0.01,
         err_int = None,
@@ -22,13 +23,16 @@ def build_majorant_xs_nuclide(
 ):
     
     # get all the nuclides in the materials or maj_mat
+    nuclide = geometry.nuclide_objects[nuclide_name]['wmp']
 
     # find E_min, E_max, n_windows and E_spacing
     E_min = nuclide.E_min
     E_max = nuclide.E_max
     n_windows = nuclide.n_windows
     E_spacing = nuclide.spacing
-    
+
+    if last_energy is not None:
+        E_max = last_energy
 
 
 
@@ -66,8 +70,8 @@ def build_majorant_xs_nuclide(
         #evaluate the cross section at i_grid, i_grid + 1 and i_grid + 1/2 spacing
         e_last = point_grid[i_grid]
         e_next = point_grid[i_grid + 1]
-        sigma_total = geometry.calculate_nuclide_majorant_xs(energy = e_last, nuclide = nuclide)
-        sigma_total_next = geometry.calculate_nuclide_majorant_xs(energy = e_next, nuclide = nuclide)
+        sigma_total = geometry.calculate_nuclide_majorant_xs(energy = e_last, nuclide_name = nuclide_name)
+        sigma_total_next = geometry.calculate_nuclide_majorant_xs(energy = e_next, nuclide_name = nuclide_name)
 
         ## additional check from RECONR
         # roudinng error check
@@ -91,7 +95,7 @@ def build_majorant_xs_nuclide(
             
 
 
-        sigma_total_half = geometry.calculate_nuclide_majorant_xs(energy = e_half_truncated, nuclide = nuclide)
+        sigma_total_half = geometry.calculate_nuclide_majorant_xs(energy = e_half_truncated, nuclide_name = nuclide_name)
 
 
 
@@ -113,7 +117,7 @@ def build_majorant_xs_nuclide(
 
     # add the last point
     energy_grid.append(last_energy_to_add)
-    cross_section_grid.append(geometry.calculate_nuclide_majorant_xs(energy = last_energy_to_add, nuclide = nuclide))
+    cross_section_grid.append(geometry.calculate_nuclide_majorant_xs(energy = last_energy_to_add, nuclide_name = nuclide_name))
     print("done")
 
     # RECONR second additional check with errmax
@@ -147,7 +151,7 @@ def build_majorant_xs_nuclide(
                 convergence_flag = True
                 
         sigma_next = cross_section_grid[i_grid + 1]
-        sigma_half = geometry.calculate_nuclide_majorant_xs(energy = e_half_truncated, nuclide = nuclide)
+        sigma_half = geometry.calculate_nuclide_majorant_xs(energy = e_half_truncated, nuclide_name = nuclide_name)
         sigma_interp = (sigma + sigma_next) / 2
         if sigma_half == 0:
             err = 0
@@ -241,9 +245,10 @@ def build_majorant_xs_grid(
 
 
 
+    nuclides: dict = {}
     for mat in materials:
-        for nuclide_obj, density in mat.nuclides:
-            nuclides[nuclide_obj.name] = nuclide_obj  # unique by name
+        for nuclide_name, density in mat.nuclides:
+            nuclides[nuclide_name] = geom.nuclide_objects[nuclide_name]['wmp']
 
     nuclide_list = list(nuclides.values())
 
@@ -266,7 +271,8 @@ def build_majorant_xs_grid(
             minimum_spacing_nuclide = nuclide.name
 
     
-    E_max = min(E_max, last_energy) if last_energy is not None else E_max
+    if last_energy is not None:
+        E_max = last_energy
     n_windows = nuclides[minimum_spacing_nuclide].n_windows
 
 

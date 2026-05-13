@@ -1,5 +1,5 @@
 """
-performance_classes.py  (updated timing section)
+performance_classes.py
 =================================================
 Timing structure:
 
@@ -13,11 +13,11 @@ Timing structure:
     time_total_s           : time_preprocessing_s + time_run_source_s
                              (what the user actually waited for end-to-end)
 
-    time_majorant_s        : cumulative wall time inside get_majorant_xs()
-                             (called during transport → subset of time_run_source_s)
+    time_majorant_{wmp,endf}_s  : cumulative wall time inside get_majorant_xs(),
+                                  split by evaluation regime.
 
-    time_xs_eval_s         : cumulative wall time inside _evaluate_acceptance()
-                             (called during transport → subset of time_run_source_s)
+    time_xs_eval_{wmp,endf}_s   : cumulative wall time inside _evaluate_acceptance(),
+                                  split by evaluation regime.
 
     neutrons_per_second    : n_neutrons / time_run_source_s
 """
@@ -169,25 +169,37 @@ class MemoryTracker:
 @dataclass
 class PerformanceTracker:
     """
-    Four-timer performance tracker.
+    Performance tracker with WMP / ENDF split for all XS-evaluation counters.
 
     Timers
     ------
     1. Preprocessing   : accumulated across all set_*() calls before run_source()
     2. Run-source      : pure neutron transport (start()/stop() in run_source)
     3. Total           : preprocessing + run-source  (derived property)
-    4. Sub-regions     : majorant XS lookups and local XS evaluations
-                         (subsets of run-source time, always reported)
+    4. Sub-regions     : majorant XS lookups and local XS evaluations,
+                         each split into _wmp and _endf variants.
 
-    neutrons_per_second is computed from run-source time only.
+    Backward-compatible aggregated properties (time_majorant, time_xs_eval,
+    n_xs_evaluations, n_majorant_updates, n_real_collisions,
+    n_virtual_collisions, n_wrong_majorant, n_wrong_majorant_mean_error,
+    rejection_fraction, wrong_majorant_fraction, wrong_majorant_mean_error)
+    are all kept as derived properties so existing call-sites keep working.
     """
 
     # ── preprocessing timer ───────────────────────────────────────────────────
     _pp_wall_start: Optional[float] = field(default=None, repr=False)
     _pp_cpu_start:  Optional[float] = field(default=None, repr=False)
 
-    time_preprocessing:     float = 0.0   # cumulative wall
-    cpu_time_preprocessing: float = 0.0   # cumulative CPU
+    time_preprocessing:     float = 0.0
+    cpu_time_preprocessing: float = 0.0
+
+    # preprocessing-phase majorant counters (e.g. reconr grid build)
+    n_majorant_updates_wmp_pp:   int   = 0
+    n_majorant_updates_endf_pp:  int   = 0
+    time_majorant_wmp_pp:        float = 0.0
+    cpu_time_majorant_wmp_pp:    float = 0.0
+    time_majorant_endf_pp:       float = 0.0
+    cpu_time_majorant_endf_pp:   float = 0.0
 
     # ── run-source timer ──────────────────────────────────────────────────────
     _rs_wall_start: Optional[float] = field(default=None, repr=False)
@@ -196,19 +208,78 @@ class PerformanceTracker:
     _rs_cpu_end:    Optional[float] = field(default=None, repr=False)
 
     # ── sub-region timers (subsets of run-source) ─────────────────────────────
-    time_majorant:     float = 0.0
-    cpu_time_majorant: float = 0.0
-    time_xs_eval:      float = 0.0
-    cpu_time_xs_eval:  float = 0.0
+    time_majorant_wmp:      float = 0.0
+    cpu_time_majorant_wmp:  float = 0.0
+    time_majorant_endf:     float = 0.0
+    cpu_time_majorant_endf: float = 0.0
+
+    time_xs_eval_wmp:       float = 0.0
+    cpu_time_xs_eval_wmp:   float = 0.0
+    time_xs_eval_endf:      float = 0.0
+    cpu_time_xs_eval_endf:  float = 0.0
 
     # ── event counters ────────────────────────────────────────────────────────
-    n_neutrons:                  int   = 0
-    n_real_collisions:           int   = 0
-    n_virtual_collisions:        int   = 0
-    n_xs_evaluations:            int   = 0
-    n_majorant_updates:          int   = 0
-    n_wrong_majorant:            int   = 0
-    n_wrong_majorant_mean_error: float = 0.0
+    n_neutrons:                      int   = 0
+
+    n_real_collisions_wmp:           int   = 0
+    n_real_collisions_endf:          int   = 0
+    n_virtual_collisions_wmp:        int   = 0
+    n_virtual_collisions_endf:       int   = 0
+
+    n_xs_evaluations_wmp:            int   = 0
+    n_xs_evaluations_endf:           int   = 0
+
+    n_majorant_updates_wmp:          int   = 0
+    n_majorant_updates_endf:         int   = 0
+
+    n_wrong_majorant_wmp:            int   = 0
+    n_wrong_majorant_endf:           int   = 0
+    n_wrong_majorant_error_wmp:      float = 0.0
+    n_wrong_majorant_error_endf:     float = 0.0
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # BACKWARD-COMPATIBLE AGGREGATED PROPERTIES
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @property
+    def time_majorant(self) -> float:
+        return self.time_majorant_wmp + self.time_majorant_endf
+
+    @property
+    def cpu_time_majorant(self) -> float:
+        return self.cpu_time_majorant_wmp + self.cpu_time_majorant_endf
+
+    @property
+    def time_xs_eval(self) -> float:
+        return self.time_xs_eval_wmp + self.time_xs_eval_endf
+
+    @property
+    def cpu_time_xs_eval(self) -> float:
+        return self.cpu_time_xs_eval_wmp + self.cpu_time_xs_eval_endf
+
+    @property
+    def n_xs_evaluations(self) -> int:
+        return self.n_xs_evaluations_wmp + self.n_xs_evaluations_endf
+
+    @property
+    def n_majorant_updates(self) -> int:
+        return self.n_majorant_updates_wmp + self.n_majorant_updates_endf
+
+    @property
+    def n_real_collisions(self) -> int:
+        return self.n_real_collisions_wmp + self.n_real_collisions_endf
+
+    @property
+    def n_virtual_collisions(self) -> int:
+        return self.n_virtual_collisions_wmp + self.n_virtual_collisions_endf
+
+    @property
+    def n_wrong_majorant(self) -> int:
+        return self.n_wrong_majorant_wmp + self.n_wrong_majorant_endf
+
+    @property
+    def n_wrong_majorant_mean_error(self) -> float:
+        return self.n_wrong_majorant_error_wmp + self.n_wrong_majorant_error_endf
 
     # ─────────────────────────────────────────────────────────────────────────
     # PREPROCESSING TIMER
@@ -274,19 +345,31 @@ class PerformanceTracker:
                 setattr(self._perf, self._count_attr, getattr(self._perf, self._count_attr) + 1)
             return False
 
-    def time_majorant_region(self):
-        return self._Region(self, "time_majorant", "cpu_time_majorant", "n_majorant_updates")
+    def time_majorant_wmp_region(self):
+        return self._Region(self, "time_majorant_wmp", "cpu_time_majorant_wmp", "n_majorant_updates_wmp")
 
-    def time_xs_eval_region(self):
-        return self._Region(self, "time_xs_eval", "cpu_time_xs_eval", "n_xs_evaluations")
+    def time_majorant_endf_region(self):
+        return self._Region(self, "time_majorant_endf", "cpu_time_majorant_endf", "n_majorant_updates_endf")
+
+    def time_xs_eval_wmp_region(self):
+        return self._Region(self, "time_xs_eval_wmp", "cpu_time_xs_eval_wmp", "n_xs_evaluations_wmp")
+
+    def time_xs_eval_endf_region(self):
+        return self._Region(self, "time_xs_eval_endf", "cpu_time_xs_eval_endf", "n_xs_evaluations_endf")
 
     # ─────────────────────────────────────────────────────────────────────────
     # RESET
     # ─────────────────────────────────────────────────────────────────────────
 
     def reset_counters(self, keep_preprocessing: bool = True):
-        saved_pp_wall = self.time_preprocessing
-        saved_pp_cpu  = self.cpu_time_preprocessing
+        saved_pp_wall                  = self.time_preprocessing
+        saved_pp_cpu                   = self.cpu_time_preprocessing
+        saved_n_maj_wmp_pp             = self.n_majorant_updates_wmp_pp
+        saved_n_maj_endf_pp            = self.n_majorant_updates_endf_pp
+        saved_time_maj_wmp_pp          = self.time_majorant_wmp_pp
+        saved_cpu_time_maj_wmp_pp      = self.cpu_time_majorant_wmp_pp
+        saved_time_maj_endf_pp         = self.time_majorant_endf_pp
+        saved_cpu_time_maj_endf_pp     = self.cpu_time_majorant_endf_pp
 
         self._rs_wall_start = None
         self._rs_wall_end   = None
@@ -295,25 +378,49 @@ class PerformanceTracker:
         self._pp_wall_start = None
         self._pp_cpu_start  = None
 
-        self.n_neutrons                  = 0
-        self.n_real_collisions           = 0
-        self.n_virtual_collisions        = 0
-        self.n_xs_evaluations            = 0
-        self.n_majorant_updates          = 0
-        self.n_wrong_majorant            = 0
-        self.n_wrong_majorant_mean_error = 0.0
+        # run-source sub-region timers
+        self.time_majorant_wmp      = 0.0
+        self.cpu_time_majorant_wmp  = 0.0
+        self.time_majorant_endf     = 0.0
+        self.cpu_time_majorant_endf = 0.0
+        self.time_xs_eval_wmp       = 0.0
+        self.cpu_time_xs_eval_wmp   = 0.0
+        self.time_xs_eval_endf      = 0.0
+        self.cpu_time_xs_eval_endf  = 0.0
 
-        self.time_majorant     = 0.0
-        self.cpu_time_majorant = 0.0
-        self.time_xs_eval      = 0.0
-        self.cpu_time_xs_eval  = 0.0
+        # event counters
+        self.n_neutrons                  = 0
+        self.n_real_collisions_wmp       = 0
+        self.n_real_collisions_endf      = 0
+        self.n_virtual_collisions_wmp    = 0
+        self.n_virtual_collisions_endf   = 0
+        self.n_xs_evaluations_wmp        = 0
+        self.n_xs_evaluations_endf       = 0
+        self.n_majorant_updates_wmp      = 0
+        self.n_majorant_updates_endf     = 0
+        self.n_wrong_majorant_wmp        = 0
+        self.n_wrong_majorant_endf       = 0
+        self.n_wrong_majorant_error_wmp  = 0.0
+        self.n_wrong_majorant_error_endf = 0.0
 
         if keep_preprocessing:
-            self.time_preprocessing     = saved_pp_wall
-            self.cpu_time_preprocessing = saved_pp_cpu
+            self.time_preprocessing         = saved_pp_wall
+            self.cpu_time_preprocessing     = saved_pp_cpu
+            self.n_majorant_updates_wmp_pp  = saved_n_maj_wmp_pp
+            self.n_majorant_updates_endf_pp = saved_n_maj_endf_pp
+            self.time_majorant_wmp_pp       = saved_time_maj_wmp_pp
+            self.cpu_time_majorant_wmp_pp   = saved_cpu_time_maj_wmp_pp
+            self.time_majorant_endf_pp      = saved_time_maj_endf_pp
+            self.cpu_time_majorant_endf_pp  = saved_cpu_time_maj_endf_pp
         else:
-            self.time_preprocessing     = 0.0
-            self.cpu_time_preprocessing = 0.0
+            self.time_preprocessing         = 0.0
+            self.cpu_time_preprocessing     = 0.0
+            self.n_majorant_updates_wmp_pp  = 0
+            self.n_majorant_updates_endf_pp = 0
+            self.time_majorant_wmp_pp       = 0.0
+            self.cpu_time_majorant_wmp_pp   = 0.0
+            self.time_majorant_endf_pp      = 0.0
+            self.cpu_time_majorant_endf_pp  = 0.0
 
     # ─────────────────────────────────────────────────────────────────────────
     # DERIVED PROPERTIES
@@ -321,7 +428,6 @@ class PerformanceTracker:
 
     @property
     def time_run_source(self) -> float:
-        """Wall time of run_source() — pure transport, no preprocessing."""
         if self._rs_wall_start is None or self._rs_wall_end is None:
             return float("nan")
         return self._rs_wall_end - self._rs_wall_start
@@ -334,7 +440,6 @@ class PerformanceTracker:
 
     @property
     def time_total(self) -> float:
-        """Preprocessing + run_source wall time."""
         rs = self.time_run_source
         if not math.isfinite(rs):
             return float("nan")
@@ -347,7 +452,7 @@ class PerformanceTracker:
             return float("nan")
         return self.cpu_time_preprocessing + rs
 
-    # backward-compatible aliases used by existing code
+    # backward-compatible aliases
     @property
     def total_time(self) -> float:
         return self.time_run_source
@@ -358,7 +463,6 @@ class PerformanceTracker:
 
     @property
     def neutrons_per_second(self) -> float:
-        """Throughput based on run-source time only (no preprocessing)."""
         rs = self.time_run_source
         if not math.isfinite(rs) or rs <= 0.0:
             return 0.0
@@ -367,17 +471,41 @@ class PerformanceTracker:
     @property
     def rejection_fraction(self) -> float:
         total = self.n_real_collisions + self.n_virtual_collisions
-        return self.n_virtual_collisions / total if total > 0 else 0.0
+        return self.n_virtual_collisions / total if total > 0 else float("nan")
+
+    @property
+    def rejection_fraction_wmp(self) -> float:
+        total = self.n_real_collisions_wmp + self.n_virtual_collisions_wmp
+        return self.n_virtual_collisions_wmp / total if total > 0 else float("nan")
+
+    @property
+    def rejection_fraction_endf(self) -> float:
+        total = self.n_real_collisions_endf + self.n_virtual_collisions_endf
+        return self.n_virtual_collisions_endf / total if total > 0 else float("nan")
 
     @property
     def wrong_majorant_fraction(self) -> float:
-        return (self.n_wrong_majorant / self.n_majorant_updates
-                if self.n_majorant_updates > 0 else 0.0)
+        return self.n_wrong_majorant / self.n_majorant_updates if self.n_majorant_updates > 0 else float("nan")
+
+    @property
+    def wrong_majorant_fraction_wmp(self) -> float:
+        return self.n_wrong_majorant_wmp / self.n_majorant_updates_wmp if self.n_majorant_updates_wmp > 0 else float("nan")
+
+    @property
+    def wrong_majorant_fraction_endf(self) -> float:
+        return self.n_wrong_majorant_endf / self.n_majorant_updates_endf if self.n_majorant_updates_endf > 0 else float("nan")
 
     @property
     def wrong_majorant_mean_error(self) -> float:
-        return (self.n_wrong_majorant_mean_error / self.n_wrong_majorant
-                if self.n_wrong_majorant > 0 else 0.0)
+        return self.n_wrong_majorant_mean_error / self.n_wrong_majorant if self.n_wrong_majorant > 0 else float("nan")
+
+    @property
+    def wrong_majorant_mean_error_wmp(self) -> float:
+        return self.n_wrong_majorant_error_wmp / self.n_wrong_majorant_wmp if self.n_wrong_majorant_wmp > 0 else float("nan")
+
+    @property
+    def wrong_majorant_mean_error_endf(self) -> float:
+        return self.n_wrong_majorant_error_endf / self.n_wrong_majorant_endf if self.n_wrong_majorant_endf > 0 else float("nan")
 
     @property
     def cpu_efficiency(self) -> float:
@@ -393,39 +521,72 @@ class PerformanceTracker:
 
     def snapshot(self) -> Dict[str, Any]:
         return {
-            # ── four timers ───────────────────────────────────────────────
-            "time_preprocessing_s"     : self.time_preprocessing,
-            "cpu_time_preprocessing_s" : self.cpu_time_preprocessing,
-            "time_run_source_s"        : self.time_run_source,
-            "cpu_time_run_source_s"    : self.cpu_time_run_source,
-            "time_total_s"             : self.time_total,
-            "cpu_time_total_s"         : self.cpu_time_total,
-            # backward-compat keys expected by _compute_batch_stats / export
-            "total_time_s"             : self.time_run_source,
-            "total_cpu_time_s"         : self.cpu_time_run_source,
+            # ── preprocessing ─────────────────────────────────────────────
+            "time_preprocessing_s"          : self.time_preprocessing,
+            "cpu_time_preprocessing_s"      : self.cpu_time_preprocessing,
+            "n_majorant_updates_wmp_pp"     : self.n_majorant_updates_wmp_pp,
+            "n_majorant_updates_endf_pp"    : self.n_majorant_updates_endf_pp,
+            "time_majorant_wmp_pp_s"        : self.time_majorant_wmp_pp,
+            "cpu_time_majorant_wmp_pp_s"    : self.cpu_time_majorant_wmp_pp,
+            "time_majorant_endf_pp_s"       : self.time_majorant_endf_pp,
+            "cpu_time_majorant_endf_pp_s"   : self.cpu_time_majorant_endf_pp,
+            # ── run-source ────────────────────────────────────────────────
+            "time_run_source_s"             : self.time_run_source,
+            "cpu_time_run_source_s"         : self.cpu_time_run_source,
+            "time_total_s"                  : self.time_total,
+            "cpu_time_total_s"              : self.cpu_time_total,
+            # backward-compat
+            "total_time_s"                  : self.time_run_source,
+            "total_cpu_time_s"              : self.cpu_time_run_source,
             # ── sub-region timers ─────────────────────────────────────────
-            "time_majorant_s"          : self.time_majorant,
-            "cpu_time_majorant_s"      : self.cpu_time_majorant,
-            "n_majorant_updates"       : self.n_majorant_updates,
-            "time_xs_eval_s"           : self.time_xs_eval,
-            "cpu_time_xs_eval_s"       : self.cpu_time_xs_eval,
-            "n_xs_evaluations"         : self.n_xs_evaluations,
+            "time_majorant_s"               : self.time_majorant,
+            "cpu_time_majorant_s"           : self.cpu_time_majorant,
+            "time_majorant_wmp_s"           : self.time_majorant_wmp,
+            "cpu_time_majorant_wmp_s"       : self.cpu_time_majorant_wmp,
+            "time_majorant_endf_s"          : self.time_majorant_endf,
+            "cpu_time_majorant_endf_s"      : self.cpu_time_majorant_endf,
+            "time_xs_eval_s"                : self.time_xs_eval,
+            "cpu_time_xs_eval_s"            : self.cpu_time_xs_eval,
+            "time_xs_eval_wmp_s"            : self.time_xs_eval_wmp,
+            "cpu_time_xs_eval_wmp_s"        : self.cpu_time_xs_eval_wmp,
+            "time_xs_eval_endf_s"           : self.time_xs_eval_endf,
+            "cpu_time_xs_eval_endf_s"       : self.cpu_time_xs_eval_endf,
             # ── throughput / counters ─────────────────────────────────────
-            "neutrons_per_second"      : self.neutrons_per_second,
-            "n_neutrons"               : self.n_neutrons,
-            "n_real_collisions"        : self.n_real_collisions,
-            "n_virtual_collisions"     : self.n_virtual_collisions,
-            "rejection_fraction"       : self.rejection_fraction,
-            "cpu_efficiency"           : self.cpu_efficiency,
+            "neutrons_per_second"           : self.neutrons_per_second,
+            "n_neutrons"                    : self.n_neutrons,
+            "n_real_collisions"             : self.n_real_collisions,
+            "n_real_collisions_wmp"         : self.n_real_collisions_wmp,
+            "n_real_collisions_endf"        : self.n_real_collisions_endf,
+            "n_virtual_collisions"          : self.n_virtual_collisions,
+            "n_virtual_collisions_wmp"      : self.n_virtual_collisions_wmp,
+            "n_virtual_collisions_endf"     : self.n_virtual_collisions_endf,
+            "rejection_fraction"            : self.rejection_fraction,
+            "rejection_fraction_wmp"        : self.rejection_fraction_wmp,
+            "rejection_fraction_endf"       : self.rejection_fraction_endf,
+            "cpu_efficiency"                : self.cpu_efficiency,
+            "n_xs_evaluations"              : self.n_xs_evaluations,
+            "n_xs_evaluations_wmp"          : self.n_xs_evaluations_wmp,
+            "n_xs_evaluations_endf"         : self.n_xs_evaluations_endf,
+            "n_majorant_updates"            : self.n_majorant_updates,
+            "n_majorant_updates_wmp"        : self.n_majorant_updates_wmp,
+            "n_majorant_updates_endf"       : self.n_majorant_updates_endf,
             # ── majorant quality ──────────────────────────────────────────
-            "n_wrong_majorant"         : self.n_wrong_majorant,
-            "wrong_majorant_mean_error": self.wrong_majorant_mean_error,
-            "wrong_majorant_fraction"  : self.wrong_majorant_fraction,
+            "n_wrong_majorant"              : self.n_wrong_majorant,
+            "n_wrong_majorant_wmp"          : self.n_wrong_majorant_wmp,
+            "n_wrong_majorant_endf"         : self.n_wrong_majorant_endf,
+            "wrong_majorant_fraction"       : self.wrong_majorant_fraction,
+            "wrong_majorant_fraction_wmp"   : self.wrong_majorant_fraction_wmp,
+            "wrong_majorant_fraction_endf"  : self.wrong_majorant_fraction_endf,
+            "wrong_majorant_mean_error"     : self.wrong_majorant_mean_error,
+            "wrong_majorant_mean_error_wmp" : self.wrong_majorant_mean_error_wmp,
+            "wrong_majorant_mean_error_endf": self.wrong_majorant_mean_error_endf,
         }
 
     # ─────────────────────────────────────────────────────────────────────────
     # SUMMARY
     # ─────────────────────────────────────────────────────────────────────────
+    def pct(self,v) -> str:
+        return f"{'N/A':>10}" if v is None or math.isnan(v) else f"{v:>10.3%}"
 
     def summary(self) -> str:
         W = 64
@@ -441,10 +602,37 @@ class PerformanceTracker:
             "=" * W,
             "  PERFORMANCE SUMMARY",
             "=" * W,
+            '/n',
+            '/n',
+            "="*W,
+            " PREPROCESSING",
+            "=" * W,
             f"  {'Metric':<34} {'Wall (s)':>10}  {'CPU (s)':>10}",
             "-" * W,
             row("Preprocessing",
                 self.time_preprocessing, self.cpu_time_preprocessing),
+            row(" -> WMP access",
+                self.time_majorant_wmp_pp, self.cpu_time_majorant_wmp_pp),
+            row(" -> ENDF access",
+                self.time_majorant_endf_pp, self.cpu_time_majorant_endf_pp),
+            '/n',
+            "-" * W,
+            srow("Total preprocessing majorant access",
+                    f"{self.n_majorant_updates_wmp_pp + self.n_majorant_updates_endf_pp:>10,}"),
+            srow(" -> WMP majorant updates ",
+                    f"{self.n_majorant_updates_wmp_pp:>10,}"),
+            srow(" -> ENDF majorant updates",
+                    f"{self.n_majorant_updates_endf_pp:>10,}"),
+            srow("WMP majorant update time per update",
+                    f"{self.time_majorant_wmp_pp / max(self.n_majorant_updates_wmp_pp, 1):>10.4f}"),
+            srow("ENDF majorant update time per update",
+                    f"{self.time_majorant_endf_pp / max(self.n_majorant_updates_endf_pp, 1):>10.4f}"),
+            "/n",
+            "=" * W,
+            " RUN-SOURCE",
+            "=" * W,
+            f"  {'Metric':<34} {'Wall (s)':>10}  {'CPU (s)':>10}",
+            "-" * W,
             row("Run-source (transport only)",
                 self.time_run_source,    self.cpu_time_run_source),
             row("Total  (preprocessing + run)",
@@ -452,33 +640,85 @@ class PerformanceTracker:
             "-" * W,
             row("  ↳ Majorant XS evaluations",
                 self.time_majorant,      self.cpu_time_majorant),
+            row ("  ↳ WMP majorant XS evaluations",
+                self.time_majorant_wmp, self.cpu_time_majorant_wmp),
+            row ("  ↳ ENDF majorant XS evaluations",
+                self.time_majorant_endf,self.cpu_time_majorant_endf),
             row("  ↳ Local XS evaluations",
                 self.time_xs_eval,       self.cpu_time_xs_eval),
+            row("  ↳ WMP local XS evaluations",
+                self.time_xs_eval_wmp,   self.cpu_time_xs_eval_wmp),
+            row("  ↳ ENDF local XS evaluations",
+                self.time_xs_eval_endf,  self.cpu_time_xs_eval_endf),
+
             "-" * W,
             f"  {'CPU efficiency (run-source)':<34} {self.cpu_efficiency:>10.3f}"
             f"    [cpu/wall, per-process]",
             f"  {'Neutrons / second':<34} {self.neutrons_per_second:>10.1f}"
             f"    [based on run-source time]",
             "-" * W,
+            
+            "\n",
+            "=" * W,
+            "EFFICIENCY & QUALITY METRICS",
+            "=" * W,
             srow("Neutrons simulated",
                  f"{self.n_neutrons:>10,}"),
             srow("Majorant updates",
                  f"{self.n_majorant_updates:>10,}"),
+            srow(" -> WMP majorant updates",
+                 f"{self.n_majorant_updates_wmp:>10,}"),
+            srow(" ->ENDF majorant updates",
+                 f"{self.n_majorant_updates_endf:>10,}"),
             srow("XS evaluations",
                  f"{self.n_xs_evaluations:>10,}"),
+            srow(" -> WMP XS evaluations",
+                 f"{self.n_xs_evaluations_wmp:>10,}"),
+            srow(" -> ENDF XS evaluations",
+                 f"{self.n_xs_evaluations_endf:>10,}"),
             srow("Real collisions",
                  f"{self.n_real_collisions:>10,}"),
+            srow(" -> WMP real collisions",
+                 f"{self.n_real_collisions_wmp:>10,}"),
+            srow(" -> ENDF real collisions",
+                 f"{self.n_real_collisions_endf:>10,}"),
             srow("Virtual (rejected)",
                  f"{self.n_virtual_collisions:>10,}"),
-            srow("Rejection fraction",
-                 f"{self.rejection_fraction:>10.3%}"),
-            srow("Wrong majorant fraction",
-                 f"{self.wrong_majorant_fraction:>10.3%}"),
-            srow("Wrong majorant mean error",
-                 f"{self.wrong_majorant_mean_error:>10.3%}"),
+            srow(" -> WMP virtual collisions",
+                 f"{self.n_virtual_collisions_wmp:>10,}"),
+            srow(" -> ENDF virtual collisions",
+                 f"{self.n_virtual_collisions_endf:>10,}"),
+
+            "-" * W,
+            
+            srow("Time per majorant update (ms)",
+                f"{1000 * self.time_majorant / max(self.n_majorant_updates, 1):>10.4f}"),
+            srow(" -> WMP",
+                f"{1000 * self.time_majorant_wmp / max(self.n_majorant_updates_wmp, 1):>10.4f}"),
+            srow(" -> ENDF",
+                f"{1000 * self.time_majorant_endf / max(self.n_majorant_updates_endf, 1):>10.4f}"),
+            srow("Time per XS eval (ms)",
+                f"{1000 * self.time_xs_eval / max(self.n_xs_evaluations, 1):>10.4f}"),
+            srow(" -> WMP",
+                f"{1000 * self.time_xs_eval_wmp / max(self.n_xs_evaluations_wmp, 1):>10.4f}"),
+            srow(" -> ENDF",
+                f"{1000 * self.time_xs_eval_endf / max(self.n_xs_evaluations_endf, 1):>10.4f}"),
+
+            "-" * W,
+
+            srow("Rejection fraction",          self.pct(self.rejection_fraction)),
+            srow(" -> WMP rejection fraction",  self.pct(self.rejection_fraction_wmp)),
+            srow(" -> ENDF rejection fraction", self.pct(self.rejection_fraction_endf)),
+            srow("Wrong majorant fraction",          self.pct(self.wrong_majorant_fraction)),
+            srow(" -> WMP wrong majorant fraction",  self.pct(self.wrong_majorant_fraction_wmp)),
+            srow(" -> ENDF wrong majorant fraction", self.pct(self.wrong_majorant_fraction_endf)),
+            srow("Wrong majorant mean error",          self.pct(self.wrong_majorant_mean_error)),
+            srow(" -> WMP wrong majorant mean error",  self.pct(self.wrong_majorant_mean_error_wmp)),
+            srow(" -> ENDF wrong majorant mean error", self.pct(self.wrong_majorant_mean_error_endf)),
             "=" * W,
         ]
         return "\n".join(lines)
+
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -533,7 +773,7 @@ class NeutronHistory:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# BatchTimer  (unchanged from prior version)
+# BatchTimer  (unchanged)
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dataclass

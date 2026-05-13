@@ -23,15 +23,31 @@ picklable in general), we extract the XS evaluation callable into a
 top-level function that receives only serialisable arguments.  The geometry
 is passed as a picklable proxy if it supports __getstate__, otherwise we fall
 back to multiprocessing with initializer-based sharing via a global.
+
+WMP / ENDF preprocessing counts
+---------------------------------
+Both public entry points now return a 6-tuple whose last element is a dict:
+
+    pp_counts = {
+        "n_wmp"    : int,   # grid points evaluated via WMP
+        "n_endf"   : int,   # grid points evaluated via ENDF fallback
+        "time_wmp" : float, # cumulative wall-clock time for WMP evals (s)
+        "time_endf": float, # cumulative wall-clock time for ENDF evals (s)
+    }
+
+These are collected from workers in the main process after the pool closes
+and are therefore always accurate regardless of parallelism.
 """
 
 from __future__ import annotations
 
 import math
 import os
+import time
 import numpy as np
+import src.geometry_classes as geom
 from concurrent.futures import ProcessPoolExecutor, as_completed
-from typing import Callable, List, Tuple
+from typing import Callable, Dict, List, Tuple
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -78,41 +94,75 @@ def _truncate_midpoint(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# WMP range helper
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _is_in_wmp_range(e: float) -> bool:
+    """
+    Return True if energy e falls inside the WMP range of the geometry
+    stored in _GEOMETRY.  Called inside workers — uses the process-local copy.
+
+    For the mat-majorant path we check all nuclides in the geometry; if at
+    least one covers e via WMP the evaluation is classified as WMP.
+    For the nuclide path (_NUCLIDE_NAME is set) we check that single nuclide.
+    """
+    if _NUCLIDE_NAME is not None:
+        # per-nuclide worker — check only the active nuclide
+        wmp = geom.nuclide_objects[_NUCLIDE_NAME]['wmp']
+        return wmp is not None and wmp.E_min <= e <= wmp.E_max
+
+    # mat-majorant worker — check all nuclides in the geometry
+    for name, _ in _GEOMETRY._nuclides.values():
+        wmp = geom.nuclide_objects[name]['wmp']
+        if wmp is not None and wmp.E_min <= e <= wmp.E_max:
+            return True
+    return False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Per-window worker
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _process_window(
     window_idx:  int,
-    window_points: List[float],   # initial point_grid slice for this window
+    window_points: List[float],
     err_lim:     float,
     err_max:     float,
     err_int:     float,
-) -> Tuple[int, List[float], List[float]]:
+) -> Tuple[int, List[float], List[float], int, int, float, float]:
     """
     Run both RECONR passes for a single WMP window.
 
-    Parameters
-    ----------
-    window_idx    : window index (returned unchanged for ordered collection)
-    window_points : energy points belonging to this window  (≥ 2 points)
-    err_lim, err_max, err_int : tolerance parameters
-
     Returns
     -------
-    (window_idx, energy_grid, xs_grid)  — local grids for this window,
-    NOT including the last point (to avoid duplication at window boundaries).
+    (window_idx, energy_grid, xs_grid, n_wmp, n_endf, time_wmp, time_endf)
+
+    n_wmp / n_endf   : number of unique XS evaluations in each regime.
+    time_wmp / _endf : cumulative wall time spent in each regime (seconds).
     """
     # ── XS cache ─────────────────────────────────────────────────────────────
-    # When a midpoint is rejected (err > threshold) it becomes a new grid
-    # point, and its XS value sigma_half is reused in the very next iteration
-    # as sigma_last.  Without a cache that value would be recomputed.
-    # The cache also bridges pass 1 → pass 2: every point accepted in pass 1
-    # is already cached, so pass 2 only pays for genuinely new midpoints.
     _cache: dict[float, float] = {}
 
+    # CHANGE: local counters for WMP vs ENDF evaluations within this window.
+    # Keyed by energy so cache hits are not double-counted.
+    _wmp_energies:  set = set()
+    _endf_energies: set = set()
+    _time_wmp:  float = 0.0
+    _time_endf: float = 0.0
+
     def eval_xs_cached(e: float) -> float:
+        nonlocal _time_wmp, _time_endf
         if e not in _cache:
+            t0 = time.perf_counter()
             _cache[e] = _eval_xs(e)
+            dt = time.perf_counter() - t0
+            # CHANGE: classify and time each unique evaluation
+            if _is_in_wmp_range(e):
+                _wmp_energies.add(e)
+                _time_wmp += dt
+            else:
+                _endf_energies.add(e)
+                _time_endf += dt
         return _cache[e]
 
     # ── Pass 1 : err_max (coarse refinement) ─────────────────────────────────
@@ -141,19 +191,16 @@ def _process_window(
                if sigma_half != 0 else 0.0)
 
         if err > err_max and not converged:
-            point_grid.insert(i + 1, e_half)   # refine in-place
+            point_grid.insert(i + 1, e_half)
         else:
             energy_grid.append(e_last)
             xs_grid.append(sigma_last)
             i += 1
 
-    # Add the last point of this window
     energy_grid.append(point_grid[-1])
     xs_grid.append(eval_xs_cached(point_grid[-1]))
 
     # ── Pass 2 : err_lim (fine refinement) ───────────────────────────────────
-    # All points in energy_grid are already cached from pass 1.
-    # Only genuinely new midpoints trigger an actual XS evaluation.
     i = 0
     last_e = energy_grid[-1]
 
@@ -182,10 +229,9 @@ def _process_window(
         else:
             i += 1
 
-    # Drop the last point — it will be the first point of the next window
-    # (avoids duplicates at window boundaries after concatenation).
-    # The caller re-appends the final point of the last window.
-    return window_idx, energy_grid[:-1], xs_grid[:-1]
+    # CHANGE: return per-regime counts and times alongside the grid slices
+    return (window_idx, energy_grid[:-1], xs_grid[:-1],
+            len(_wmp_energies), len(_endf_energies), _time_wmp, _time_endf)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -203,14 +249,12 @@ def _split_into_windows(
     first point of window w+1 as a right boundary (so every sublist has ≥ 2
     points and the worker never needs to look outside its window).
     """
-    # Assign each point to a window
     window_of = [
         int((math.sqrt(e) - math.sqrt(E_min)) / E_spacing)
         for e in point_grid
     ]
     max_w = window_of[-1]
 
-    # Group indices by window
     windows: dict[int, List[int]] = {}
     for idx, w in enumerate(window_of):
         windows.setdefault(w, []).append(idx)
@@ -222,13 +266,11 @@ def _split_into_windows(
         idxs = windows[w]
         pts  = [point_grid[i] for i in idxs]
 
-        # Append the first point of the next non-empty window as right boundary
         for w_next in range(w + 1, max_w + 2):
             if w_next in windows:
                 pts.append(point_grid[windows[w_next][0]])
                 break
             elif w_next > max_w:
-                # last window — right boundary is already in pts
                 break
 
         if len(pts) >= 2:
@@ -238,7 +280,7 @@ def _split_into_windows(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Public entry point
+# Public entry point — mat-majorant
 # ─────────────────────────────────────────────────────────────────────────────
 
 def build_majorant_xs_grid(
@@ -249,16 +291,12 @@ def build_majorant_xs_grid(
     last_window: int   | None = None,
     last_energy: float | None = None,
     n_workers:   int   | None = None,
-) -> Tuple[List[float], List[float], float, float, List[int]]:
+    E_max:       float | None = None,
+) -> Tuple[List[float], List[float], float, float, List[int], Dict]:
     """
     Parallelised drop-in replacement for the serial build_majorant_xs_grid.
 
-    New parameter
-    -------------
-    n_workers : number of parallel processes (default: os.cpu_count()).
-                Set to 1 to run serially (useful for debugging).
-
-    All other parameters and the return value are identical to the original.
+    Returns a 6-tuple: the original 5 values plus pp_counts (see module doc).
     """
     if err_int is None:
         err_int = err_lim / 20_000
@@ -276,8 +314,8 @@ def build_majorant_xs_grid(
 
     nuclides: dict = {}
     for mat in materials:
-        for nuclide_obj, density in mat.nuclides:
-            nuclides[nuclide_obj.name] = nuclide_obj
+        for nuclide_name, density in mat.nuclides:
+            nuclides[nuclide_name] = geom.nuclide_objects[nuclide_name]['wmp']
 
     nuclide_list = list(nuclides.values())
 
@@ -296,8 +334,15 @@ def build_majorant_xs_grid(
             E_spacing = nuc.spacing
             minimum_spacing_nuclide = nuc.name
 
-    E_max = min(E_max_nuc, last_energy) if last_energy is not None else E_max_nuc
-    n_windows = nuclides[minimum_spacing_nuclide].n_windows
+    if last_energy is not None:
+        E_max = last_energy
+    else:
+        E_max = E_max_nuc
+
+    if E_max == E_max_nuc:
+        n_windows = nuclides[minimum_spacing_nuclide].n_windows
+    else:
+        n_windows = int(math.ceil((math.sqrt(E_max) - math.sqrt(E_min)) / E_spacing)) + 1
 
     print(f"[reconr_parallel] {n_windows} WMP windows, "
           f"E ∈ [{E_min:.3e}, {E_max:.3e}] eV, "
@@ -318,21 +363,29 @@ def build_majorant_xs_grid(
         point_grid.append(E_max)
 
     # ── Split into per-window slices ──────────────────────────────────────────
-    window_slices = _split_into_windows(point_grid, E_min, E_spacing)
+    window_slices    = _split_into_windows(point_grid, E_min, E_spacing)
     n_actual_windows = len(window_slices)
     print(f"[reconr_parallel] {n_actual_windows} non-empty windows to process")
 
     # ── Dispatch workers ──────────────────────────────────────────────────────
     results: dict[int, Tuple[List[float], List[float]]] = {}
 
+    # CHANGE: accumulators for preprocessing WMP/ENDF counts collected from workers
+    pp_n_wmp   = 0
+    pp_n_endf  = 0
+    pp_t_wmp   = 0.0
+    pp_t_endf  = 0.0
+
     if n_workers == 1:
-        # Serial fallback — useful for debugging / profiling
         _worker_init(geometry)
         for w_idx, pts in enumerate(window_slices):
-            _, e_local, xs_local = _process_window(
+            w_idx_out, e_local, xs_local, n_wmp, n_endf, t_wmp, t_endf = _process_window(
                 w_idx, pts, err_lim, err_max, err_int
             )
             results[w_idx] = (e_local, xs_local)
+            # CHANGE: accumulate per-window counts into preprocessing totals
+            pp_n_wmp  += n_wmp;  pp_n_endf  += n_endf
+            pp_t_wmp  += t_wmp;  pp_t_endf  += t_endf
             if w_idx % max(1, n_actual_windows // 10) == 0:
                 print(f"  window {w_idx:4d}/{n_actual_windows}  "
                       f"({100*w_idx/n_actual_windows:.0f}%)")
@@ -348,8 +401,11 @@ def build_majorant_xs_grid(
             }
             done = 0
             for future in as_completed(futures):
-                w_idx, e_local, xs_local = future.result()
+                w_idx, e_local, xs_local, n_wmp, n_endf, t_wmp, t_endf = future.result()
                 results[w_idx] = (e_local, xs_local)
+                # CHANGE: accumulate per-window counts into preprocessing totals
+                pp_n_wmp  += n_wmp;  pp_n_endf  += n_endf
+                pp_t_wmp  += t_wmp;  pp_t_endf  += t_endf
                 done += 1
                 if done % max(1, n_actual_windows // 10) == 0:
                     print(f"  {done:4d}/{n_actual_windows} windows done  "
@@ -365,10 +421,27 @@ def build_majorant_xs_grid(
         xs_grid.extend(xs_local)
 
     # Re-append the very last point (dropped by all workers to avoid duplicates)
-    energy_grid.append(window_slices[-1][-1])
-    xs_grid.append(geometry.calculate_mat_majorant_xs(window_slices[-1][-1]))
+    last_e = window_slices[-1][-1]
+    energy_grid.append(last_e)
+    # CHANGE: classify and time this final evaluation too
+    t0 = time.perf_counter()
+    xs_last = geometry.calculate_mat_majorant_xs(last_e)
+    dt = time.perf_counter() - t0
+    xs_grid.append(xs_last)
+    if any(
+        geom.nuclide_objects[name]['wmp'] is not None
+        and geom.nuclide_objects[name]['wmp'].E_min <= last_e <= geom.nuclide_objects[name]['wmp'].E_max
+        for name, _ in geometry._nuclides.values()
+    ):
+        pp_n_wmp += 1; pp_t_wmp += dt
+    else:
+        pp_n_endf += 1; pp_t_endf += dt
 
     print(f"[reconr_parallel] merged grid: {len(energy_grid)} points")
+    # CHANGE: print preprocessing split summary
+    print(f"[reconr_parallel] preprocessing evaluations — "
+          f"WMP: {pp_n_wmp:,} ({pp_t_wmp:.2f}s)  "
+          f"ENDF: {pp_n_endf:,} ({pp_t_endf:.2f}s)")
 
     # ── Safety margin ─────────────────────────────────────────────────────────
     e_arr  = np.array(energy_grid)
@@ -406,24 +479,33 @@ def build_majorant_xs_grid(
     print(f"[reconr_parallel] E_first={e_grid_list[0]:.4e} eV, "
           f"E_last={e_grid_list[-1]:.4e} eV")
 
-    return e_grid_list, xs_grid_list, math.sqrt(E_min), E_spacing, window_pointers
+    # CHANGE: bundle preprocessing counts for the caller (geometry_classes)
+    pp_counts = {
+        "n_wmp"    : pp_n_wmp,
+        "n_endf"   : pp_n_endf,
+        "time_wmp" : pp_t_wmp,
+        "time_endf": pp_t_endf,
+    }
+
+    return e_grid_list, xs_grid_list, math.sqrt(E_min), E_spacing, window_pointers, pp_counts
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Per-nuclide worker globals
 # ─────────────────────────────────────────────────────────────────────────────
 
-_NUCLIDE = None   # set by _nuclide_worker_init in each subprocess
+_NUCLIDE_NAME = None   # set by _nuclide_worker_init in each subprocess
 
 
-def _nuclide_worker_init(geometry, nuclide):
-    global _GEOMETRY, _NUCLIDE
-    _GEOMETRY = geometry
-    _NUCLIDE  = nuclide
+def _nuclide_worker_init(geometry, nuclide_name):
+    global _GEOMETRY, _NUCLIDE_NAME
+    _GEOMETRY     = geometry
+    _NUCLIDE_NAME = nuclide_name
 
 
 def _eval_xs_nuclide(e: float) -> float:
     """Worker-side per-nuclide XS evaluation."""
-    return _GEOMETRY.calculate_nuclide_majorant_xs(energy=e, nuclide=_NUCLIDE)
+    return _GEOMETRY.calculate_nuclide_majorant_xs(energy=e, nuclide_name=_NUCLIDE_NAME)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -436,16 +518,35 @@ def _process_window_nuclide(
     err_lim:       float,
     err_max:       float,
     err_int:       float,
-) -> Tuple[int, List[float], List[float]]:
+) -> Tuple[int, List[float], List[float], int, int, float, float]:
     """
-    Identical logic to _process_window but calls _eval_xs_nuclide instead of
-    _eval_xs.  Kept separate to avoid adding a branch inside the hot loop.
+    Identical logic to _process_window but calls _eval_xs_nuclide.
+
+    Returns
+    -------
+    (window_idx, energy_grid, xs_grid, n_wmp, n_endf, time_wmp, time_endf)
     """
     _cache: dict[float, float] = {}
 
+    # CHANGE: same local WMP/ENDF accounting as _process_window
+    _wmp_energies:  set = set()
+    _endf_energies: set = set()
+    _time_wmp:  float = 0.0
+    _time_endf: float = 0.0
+
     def eval_xs_cached(e: float) -> float:
+        nonlocal _time_wmp, _time_endf
         if e not in _cache:
+            t0 = time.perf_counter()
             _cache[e] = _eval_xs_nuclide(e)
+            dt = time.perf_counter() - t0
+            # CHANGE: classify using the nuclide-specific WMP range
+            if _is_in_wmp_range(e):
+                _wmp_energies.add(e)
+                _time_wmp += dt
+            else:
+                _endf_energies.add(e)
+                _time_endf += dt
         return _cache[e]
 
     # ── Pass 1 : err_max ─────────────────────────────────────────────────────
@@ -505,8 +606,9 @@ def _process_window_nuclide(
         else:
             i += 1
 
-    # Drop last point to avoid duplicates at window boundaries
-    return window_idx, energy_grid[:-1], xs_grid[:-1]
+    # CHANGE: return per-regime counts and times
+    return (window_idx, energy_grid[:-1], xs_grid[:-1],
+            len(_wmp_energies), len(_endf_energies), _time_wmp, _time_endf)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -515,38 +617,18 @@ def _process_window_nuclide(
 
 def build_majorant_xs_nuclide(
     geometry,
-    nuclide,
+    nuclide_name: str,
     err_lim:     float = 0.001,
     err_max:     float = 0.01,
     err_int:     float | None = None,
     last_energy: float | None = None,
+    last_window: int   | None = None,
     n_workers:   int   | None = None,
-) -> Tuple[List[float], List[float], float, float, List[int]]:
+) -> Tuple[List[float], List[float], float, float, List[int], Dict]:
     """
     Parallelised per-nuclide majorant grid builder.
 
-    Replaces the serial build_majorant_xs_nuclide in reconr_v2.py.
-    The XS evaluated at each energy point is:
-
-        sigma_maj(E) = calculate_nuclide_majorant_xs(E, nuclide)
-
-    which bounds the nuclide xs over the temperature range [T_min, T_max]
-    already encoded in the geometry's maj_xs_method settings.
-
-    Parameters
-    ----------
-    geometry    : Geometry   — must have calculate_nuclide_majorant_xs defined
-    nuclide     : WMP object — the nuclide to build the grid for
-    err_lim     : float      — fine refinement tolerance
-    err_max     : float      — coarse refinement tolerance
-    err_int     : float|None — area tolerance (default err_lim / 20000)
-    last_energy : float|None — cap the grid at this energy (eV)
-    n_workers   : int|None   — parallel workers (default cpu_count - 2)
-
-    Returns
-    -------
-    Same 5-tuple as the serial version:
-    (e_grid, xs_grid, sqrt_E_min, e_spacing, window_pointers)
+    Returns a 6-tuple: the original 5 values plus pp_counts (see module doc).
     """
     if err_int is None:
         err_int = err_lim / 20_000
@@ -554,13 +636,19 @@ def build_majorant_xs_nuclide(
     if n_workers is None:
         n_workers = max(1, os.cpu_count() - 2)
 
+    nuclide   = geom.nuclide_objects[nuclide_name]['wmp']
     E_min     = nuclide.E_min
     E_max     = nuclide.E_max
     E_spacing = nuclide.spacing
     n_windows = nuclide.n_windows
 
     if last_energy is not None:
-        E_max = min(E_max, last_energy)
+        E_max = last_energy
+    
+    if E_max == nuclide.E_max:
+        n_windows = nuclide.n_windows
+    else:
+        n_windows = int(math.ceil((math.sqrt(E_max) - math.sqrt(E_min)) / E_spacing))
 
     print(f"[reconr_parallel | {nuclide.name}] "
           f"{n_windows} windows, E ∈ [{E_min:.3e}, {E_max:.3e}] eV")
@@ -573,6 +661,7 @@ def build_majorant_xs_nuclide(
     for i in range(n_windows):
         e = (math.sqrt(E_min) + i * E_spacing) ** 2
         if e > E_max:
+            print(f"Last point {e:.3e} eV exceeds E_max, stopping initial grid generation")
             break
         point_grid.append(e)
 
@@ -580,7 +669,7 @@ def build_majorant_xs_nuclide(
         point_grid.append(E_max)
 
     # ── Split into per-window slices ──────────────────────────────────────────
-    window_slices   = _split_into_windows(point_grid, E_min, E_spacing)
+    window_slices    = _split_into_windows(point_grid, E_min, E_spacing)
     n_actual_windows = len(window_slices)
     print(f"[reconr_parallel | {nuclide.name}] "
           f"{n_actual_windows} non-empty windows to process")
@@ -588,13 +677,20 @@ def build_majorant_xs_nuclide(
     # ── Dispatch workers ──────────────────────────────────────────────────────
     results: dict[int, Tuple[List[float], List[float]]] = {}
 
+    # CHANGE: accumulators for preprocessing WMP/ENDF counts
+    pp_n_wmp  = 0;  pp_n_endf  = 0
+    pp_t_wmp  = 0.0; pp_t_endf = 0.0
+
     if n_workers == 1:
-        _nuclide_worker_init(geometry, nuclide)
+        _nuclide_worker_init(geometry, nuclide_name)
         for w_idx, pts in enumerate(window_slices):
-            _, e_local, xs_local = _process_window_nuclide(
+            _, e_local, xs_local, n_wmp, n_endf, t_wmp, t_endf = _process_window_nuclide(
                 w_idx, pts, err_lim, err_max, err_int
             )
             results[w_idx] = (e_local, xs_local)
+            # CHANGE: accumulate
+            pp_n_wmp += n_wmp;  pp_n_endf += n_endf
+            pp_t_wmp += t_wmp;  pp_t_endf += t_endf
             if w_idx % max(1, n_actual_windows // 10) == 0:
                 print(f"  [{nuclide.name}] window {w_idx:4d}/{n_actual_windows} "
                       f"({100*w_idx/n_actual_windows:.0f}%)")
@@ -602,7 +698,7 @@ def build_majorant_xs_nuclide(
         with ProcessPoolExecutor(
             max_workers=n_workers,
             initializer=_nuclide_worker_init,
-            initargs=(geometry, nuclide),
+            initargs=(geometry, nuclide_name),
         ) as pool:
             futures = {
                 pool.submit(
@@ -612,8 +708,11 @@ def build_majorant_xs_nuclide(
             }
             done = 0
             for future in as_completed(futures):
-                w_idx, e_local, xs_local = future.result()
+                w_idx, e_local, xs_local, n_wmp, n_endf, t_wmp, t_endf = future.result()
                 results[w_idx] = (e_local, xs_local)
+                # CHANGE: accumulate
+                pp_n_wmp += n_wmp;  pp_n_endf += n_endf
+                pp_t_wmp += t_wmp;  pp_t_endf += t_endf
                 done += 1
                 if done % max(1, n_actual_windows // 10) == 0:
                     print(f"  [{nuclide.name}] {done:4d}/{n_actual_windows} done "
@@ -629,12 +728,24 @@ def build_majorant_xs_nuclide(
         xs_grid.extend(xs_local)
 
     # Re-append the final point dropped by the last worker
-    energy_grid.append(window_slices[-1][-1])
-    xs_grid.append(geometry.calculate_nuclide_majorant_xs(
-        energy=window_slices[-1][-1], nuclide=nuclide
-    ))
+    last_e = window_slices[-1][-1]
+    energy_grid.append(last_e)
+    # CHANGE: classify the final evaluation
+    t0 = time.perf_counter()
+    xs_last = geometry.calculate_nuclide_majorant_xs(energy=last_e, nuclide_name=nuclide_name)
+    dt = time.perf_counter() - t0
+    xs_grid.append(xs_last)
+    wmp = geom.nuclide_objects[nuclide_name]['wmp']
+    if wmp is not None and wmp.E_min <= last_e <= wmp.E_max:
+        pp_n_wmp += 1; pp_t_wmp += dt
+    else:
+        pp_n_endf += 1; pp_t_endf += dt
 
     print(f"[reconr_parallel | {nuclide.name}] merged: {len(energy_grid)} points")
+    # CHANGE: print preprocessing split summary
+    print(f"[reconr_parallel | {nuclide.name}] preprocessing evaluations — "
+          f"WMP: {pp_n_wmp:,} ({pp_t_wmp:.2f}s)  "
+          f"ENDF: {pp_n_endf:,} ({pp_t_endf:.2f}s)")
 
     # ── Safety margin + dedup ─────────────────────────────────────────────────
     e_arr  = np.array(energy_grid)
@@ -666,4 +777,12 @@ def build_majorant_xs_nuclide(
     print(f"[reconr_parallel | {nuclide.name}] "
           f"E_first={e_grid_list[0]:.4e}, E_last={e_grid_list[-1]:.4e}")
 
-    return e_grid_list, xs_grid_list, math.sqrt(E_min), E_spacing, window_pointers
+    # CHANGE: bundle preprocessing counts for the caller
+    pp_counts = {
+        "n_wmp"    : pp_n_wmp,
+        "n_endf"   : pp_n_endf,
+        "time_wmp" : pp_t_wmp,
+        "time_endf": pp_t_endf,
+    }
+
+    return e_grid_list, xs_grid_list, math.sqrt(E_min), E_spacing, window_pointers, pp_counts
