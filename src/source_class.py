@@ -56,8 +56,8 @@ class SourceRegion:
 class Source:
     def __init__(self,
                  neutron_nbr    : int,
-                 geometry,
-                 source_regions : List[SourceRegion]):
+                 source_regions : List[SourceRegion],
+                 geometry       : Optional = None):
 
         if not source_regions:
             raise ValueError("At least one SourceRegion must be provided.")
@@ -66,9 +66,11 @@ class Source:
         self.geometry       = geometry
         self.source_regions = source_regions
 
-        # Validate that every region name exists in the geometry
-        for sr in self.source_regions:
-            geometry.get_region(sr.region_name)
+        if geometry is not None:
+
+            # Validate that every region name exists in the geometry
+            for sr in self.source_regions:
+                geometry.get_region(sr.region_name)
 
         # Normalise weights and precompute cumulative array for O(log N) sampling
         total_weight         = sum(sr.weight for sr in source_regions)

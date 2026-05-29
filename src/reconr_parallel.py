@@ -786,3 +786,268 @@ def build_majorant_xs_nuclide(
     }
 
     return e_grid_list, xs_grid_list, math.sqrt(E_min), E_spacing, window_pointers, pp_counts
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-material worker globals
+# ─────────────────────────────────────────────────────────────────────────────
+ 
+_MATERIAL = None  # set by _material_worker_init in each subprocess
+ 
+ 
+def _material_worker_init(geometry, material):
+    global _GEOMETRY, _MATERIAL
+    _GEOMETRY = geometry
+    _MATERIAL = material
+ 
+ 
+def _eval_xs_material(e: float) -> float:
+    """Worker-side per-material XS evaluation — uses process-local globals."""
+    total = 0.0
+    for nuclide_name, nuclide_density in _MATERIAL.nuclides:
+        total += nuclide_density * _GEOMETRY.calculate_nuclide_majorant_xs(
+            e, nuclide_name,
+        )
+    return total
+ 
+ 
+def _process_window_material(
+    window_idx:    int,
+    window_points: List[float],
+    err_lim:       float,
+    err_max:       float,
+    err_int:       float,
+) -> Tuple[int, List[float], List[float]]:
+    """
+    Identical to _process_window but calls _eval_xs_material instead of
+    _eval_xs, so it uses the per-material evaluator set by
+    _material_worker_init. Returns a 3-tuple (no pp_counts needed).
+    """
+    _cache: dict[float, float] = {}
+ 
+    def eval_xs_cached(e: float) -> float:
+        if e not in _cache:
+            _cache[e] = _eval_xs_material(e)
+        return _cache[e]
+ 
+    # ── Pass 1 : err_max coarse refinement ───────────────────────────────────
+    point_grid = list(window_points)
+    energy_grid: List[float] = []
+    xs_grid:     List[float] = []
+ 
+    i = 0
+    last_e = point_grid[-1]
+    while i < len(point_grid) - 1:
+        e_last = point_grid[i]
+        e_next = point_grid[i + 1]
+        if e_last >= last_e: break
+ 
+        s_last = eval_xs_cached(e_last)
+        s_next = eval_xs_cached(e_next)
+        e_half, _, _, converged = _truncate_midpoint(e_last, e_next)
+        s_half   = eval_xs_cached(e_half)
+        s_interp = (s_last + s_next) / 2.0
+        err = abs(s_half - s_interp) / s_half if s_half != 0 else 0.0
+ 
+        if err > err_max and not converged:
+            point_grid.insert(i + 1, e_half)
+        else:
+            energy_grid.append(e_last)
+            xs_grid.append(s_last)
+            i += 1
+ 
+    energy_grid.append(point_grid[-1])
+    xs_grid.append(eval_xs_cached(point_grid[-1]))
+ 
+    # ── Pass 2 : err_lim fine refinement ─────────────────────────────────────
+    i = 0
+    last_e = energy_grid[-1]
+    while i < len(energy_grid) - 1:
+        e      = energy_grid[i]
+        e_next = energy_grid[i + 1]
+        if e >= last_e: break
+ 
+        s      = xs_grid[i]
+        s_next = xs_grid[i + 1]
+        e_half, _, _, converged = _truncate_midpoint(e, e_next)
+        s_half   = eval_xs_cached(e_half)
+        s_interp = (s + s_next) / 2.0
+        err  = abs(s_half - s_interp) / s_half if s_half != 0 else 0.0
+        area = 0.5 * abs(s_half - s_interp) * (e_next - e)
+ 
+        if err > err_lim and area > err_int and not converged:
+            energy_grid.insert(i + 1, e_half)
+            xs_grid.insert(i + 1, s_half)
+        else:
+            i += 1
+ 
+    return window_idx, energy_grid[:-1], xs_grid[:-1]
+ 
+ 
+def build_majorant_xs_material(
+    geometry,
+    material,
+    err_lim      : float        = 0.001,
+    err_max      : float        = 0.01,
+    err_int      : float | None = None,
+    last_energy  : float | None = None,
+    last_window  : int   | None = None,
+    n_workers    : int   | None = None,
+) -> Tuple[List[float], List[float], float, float, List[int]]:
+    """
+    Build a RECONR-style majorant XS grid for a single material.
+    Same algorithm as build_majorant_xs_grid() but scoped to one material.
+ 
+    Returns
+    -------
+    5-tuple: (e_grid_list, xs_grid_list, sqrt_E_min, e_spacing, window_pointers)
+    """
+    if err_int is None:
+        err_int = err_lim / 20_000
+ 
+    if n_workers is None:
+        n_workers = max(1, os.cpu_count() - 2)
+ 
+    # ── Collect nuclides from the material ────────────────────────────────────
+    nuclides: dict = {}
+    for pair in material.nuclides:
+        nuclide_name = pair[0]
+        nuclide_density = pair[1]
+        wmp = geom.nuclide_objects[nuclide_name]['wmp']
+        if wmp is not None:
+            nuclides[nuclide_name] = wmp
+ 
+    if not nuclides:
+        raise ValueError(f"No WMP nuclides found in material '{material.name}'.")
+ 
+    # ── Energy bounds and window structure ────────────────────────────────────
+    E_min     = -np.inf
+    E_max_nuc =  np.inf
+    E_spacing =  np.inf
+    minimum_spacing_nuclide = None
+ 
+    for name, nuc in nuclides.items():
+        if nuc.E_min > E_min:       E_min = nuc.E_min
+        if nuc.E_max < E_max_nuc:   E_max_nuc = nuc.E_max
+        if nuc.spacing <= E_spacing:
+            E_spacing = nuc.spacing
+            minimum_spacing_nuclide = name
+ 
+    E_max = last_energy if last_energy is not None else E_max_nuc
+ 
+    if E_max == E_max_nuc:
+        n_windows = nuclides[minimum_spacing_nuclide].n_windows
+    else:
+        n_windows = int(math.ceil(
+            (math.sqrt(E_max) - math.sqrt(E_min)) / E_spacing
+        )) + 1
+ 
+    print(f"[build_majorant_xs_materials | {material.name}] {n_windows} WMP windows, "
+          f"E ∈ [{E_min:.3e}, {E_max:.3e}] eV, spacing = {E_spacing:.6f} √eV")
+    print(f"[build_majorant_xs_materials | {material.name}] "
+          f"err_max={err_max}, err_lim={err_lim}, err_int={err_int:.3e}, "
+          f"workers={n_workers}")
+ 
+    # ── Initial point grid ────────────────────────────────────────────────────
+    point_grid: List[float] = []
+    for i in range(n_windows):
+        e = (math.sqrt(E_min) + i * E_spacing) ** 2
+        if e > E_max:
+            break
+        point_grid.append(e)
+ 
+    if point_grid[-1] < E_max:
+        point_grid.append(E_max)
+ 
+    # ── Split into per-window slices ──────────────────────────────────────────
+    window_slices    = _split_into_windows(point_grid, E_min, E_spacing)
+    n_actual_windows = len(window_slices)
+    print(f"[build_majorant_xs_materials | {material.name}] "
+          f"{n_actual_windows} non-empty windows")
+ 
+    # ── Dispatch workers ──────────────────────────────────────────────────────
+    # CHANGE: now fully parallel — XS evaluation moved to module-level
+    # _eval_xs_material / _process_window_material so workers can pickle it.
+    # Previously this was a serial loop over a closure (not picklable).
+    results: dict[int, Tuple[List[float], List[float]]] = {}
+ 
+    if n_workers == 1:
+        _material_worker_init(geometry, material)
+        for w_idx, pts in enumerate(window_slices):
+            _, e_local, xs_local = _process_window_material(
+                w_idx, pts, err_lim, err_max, err_int
+            )
+            results[w_idx] = (e_local, xs_local)
+            if w_idx % max(1, n_actual_windows // 10) == 0:
+                print(f"  [{material.name}] window {w_idx:4d}/{n_actual_windows} "
+                      f"({100*w_idx/n_actual_windows:.0f}%)")
+    else:
+        with ProcessPoolExecutor(
+            max_workers=n_workers,
+            initializer=_material_worker_init,
+            initargs=(geometry, material),
+        ) as pool:
+            futures = {
+                pool.submit(
+                    _process_window_material, w_idx, pts, err_lim, err_max, err_int
+                ): w_idx
+                for w_idx, pts in enumerate(window_slices)
+            }
+            done = 0
+            for future in as_completed(futures):
+                w_idx = futures[future]
+                _, e_local, xs_local = future.result()
+                results[w_idx] = (e_local, xs_local)
+                done += 1
+                if done % max(1, n_actual_windows // 10) == 0:
+                    print(f"  [{material.name}] {done:4d}/{n_actual_windows} done "
+                          f"({100*done/n_actual_windows:.0f}%)")
+ 
+    # ── Merge ─────────────────────────────────────────────────────────────────
+    energy_grid_full: List[float] = []
+    xs_grid_full:     List[float] = []
+    for w_idx in range(n_actual_windows):
+        e_local, xs_local = results[w_idx]
+        energy_grid_full.extend(e_local)
+        xs_grid_full.extend(xs_local)
+ 
+    last_e = window_slices[-1][-1]
+    energy_grid_full.append(last_e)
+    # CHANGE: use _eval_xs_material (module-level) instead of the old
+    # eval_cached closure which no longer exists after the parallel refactor
+    _material_worker_init(geometry, material)
+    xs_grid_full.append(_eval_xs_material(last_e))
+ 
+    print(f"[build_majorant_xs_materials | {material.name}] "
+          f"merged: {len(energy_grid_full)} points")
+ 
+    # ── Safety margin + dedup ─────────────────────────────────────────────────
+    e_arr  = np.array(energy_grid_full)
+    xs_arr = np.array(xs_grid_full) * (1.0 + err_max)
+ 
+    diffs = np.diff(e_arr)
+    if np.any(diffs <= 0):
+        print(f"[build_majorant_xs_materials | {material.name}] WARNING: "
+              f"{(diffs <= 0).sum()} inversions before dedup")
+    mask   = np.concatenate(([True], diffs > 0))
+    e_arr  = e_arr[mask]
+    xs_arr = xs_arr[mask]
+    print(f"[build_majorant_xs_materials | {material.name}] "
+          f"dedup removed {(~mask).sum()} points, final: {len(e_arr)}")
+ 
+    e_grid_list  = e_arr.tolist()
+    xs_grid_list = xs_arr.tolist()
+ 
+    # ── Window pointer table ──────────────────────────────────────────────────
+    window_pointers = [0]
+    current_window  = 0
+    for idx, e in enumerate(e_grid_list):
+        w = int((math.sqrt(e) - math.sqrt(E_min)) / E_spacing)
+        while w > current_window:
+            window_pointers.append(idx)
+            current_window += 1
+    window_pointers.append(len(e_grid_list))
+ 
+    print(f"[build_majorant_xs_materials | {material.name}] "
+          f"E_first={e_grid_list[0]:.4e}, E_last={e_grid_list[-1]:.4e}")
+ 
+    return e_grid_list, xs_grid_list, math.sqrt(E_min), E_spacing, window_pointers

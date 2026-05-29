@@ -83,8 +83,8 @@ def assign_pole_windows(multipole_data, pole_index) :
     return pole_window
 
 def assign_energy_bounds_to_window(multipole_data, windows_list) :
-    starte = (sqrt(multipole_data.E_min) + (np.min(windows_list)-1)* (multipole_data.spacing))**2
-    ende = (sqrt(multipole_data.E_min) + (np.max(windows_list))* (multipole_data.spacing))**2
+    starte = (sqrt(multipole_data.E_min) + (np.min(windows_list))* (multipole_data.spacing))**2
+    ende = (sqrt(multipole_data.E_min) + (np.max(windows_list)+1)* (multipole_data.spacing))**2
     return starte, ende
 
 def assign_energy_to_window(multipole_data, E) :
@@ -92,7 +92,7 @@ def assign_energy_to_window(multipole_data, E) :
         raise ValueError(f"Energy {E} is out of bounds for the multipole data (E_min: {multipole_data.E_min}, E_max: {multipole_data.E_max})")
     window_index = min(multipole_data.n_windows - 1,
                        int(np.floor((np.sqrt(E) - np.sqrt(multipole_data.E_min)) / multipole_data.spacing)))
-    return window_index
+    return window_index 
 
 ### MAJORANT TEMPERATURE IDENTIFICATION FUNCTION
 
@@ -281,7 +281,7 @@ def calculate_majorant_pole_contribution(E,coefficients, T_range, multipole_data
     return maj_contribution
 
 
-def evaluate_majorant_cross_section(multipole_data, E, data_table, T_range :Optional[tuple] = None) :
+def evaluate_majorant_cross_section(multipole_data, E, data_table, T_range :Optional[tuple] = None, safety_factor : Optional[float] = 0.01) :
         """
         Evaluate the majorant cross section at a given energy E and temperature T.
 
@@ -333,7 +333,7 @@ def evaluate_majorant_cross_section(multipole_data, E, data_table, T_range :Opti
                 evaluate_curve_fit_contribution(multipole_data=multipole_data, E=E, T=T_range[0])
             )
         
-        return maj_xs*1.02
+        return maj_xs
 
 
 

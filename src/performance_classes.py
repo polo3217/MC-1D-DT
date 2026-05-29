@@ -237,6 +237,8 @@ class PerformanceTracker:
     n_wrong_majorant_error_wmp:      float = 0.0
     n_wrong_majorant_error_endf:     float = 0.0
 
+    wrong_majorant_energies: List[List[float]] = field(default_factory=list)
+
     # ─────────────────────────────────────────────────────────────────────────
     # BACKWARD-COMPATIBLE AGGREGATED PROPERTIES
     # ─────────────────────────────────────────────────────────────────────────
@@ -402,6 +404,8 @@ class PerformanceTracker:
         self.n_wrong_majorant_endf       = 0
         self.n_wrong_majorant_error_wmp  = 0.0
         self.n_wrong_majorant_error_endf = 0.0
+        # CHANGE: reset wrong_majorant_energies list each batch
+        self.wrong_majorant_energies     = []
 
         if keep_preprocessing:
             self.time_preprocessing         = saved_pp_wall
@@ -580,6 +584,7 @@ class PerformanceTracker:
             "wrong_majorant_mean_error"     : self.wrong_majorant_mean_error,
             "wrong_majorant_mean_error_wmp" : self.wrong_majorant_mean_error_wmp,
             "wrong_majorant_mean_error_endf": self.wrong_majorant_mean_error_endf,
+            "wrong_majorant_energies"       : self.wrong_majorant_energies,
         }
 
     # ─────────────────────────────────────────────────────────────────────────
@@ -657,7 +662,7 @@ class PerformanceTracker:
             f"  {'Neutrons / second':<34} {self.neutrons_per_second:>10.1f}"
             f"    [based on run-source time]",
             "-" * W,
-            
+
             "\n",
             "=" * W,
             "EFFICIENCY & QUALITY METRICS",
@@ -690,7 +695,7 @@ class PerformanceTracker:
                  f"{self.n_virtual_collisions_endf:>10,}"),
 
             "-" * W,
-            
+
             srow("Time per majorant update (ms)",
                 f"{1000 * self.time_majorant / max(self.n_majorant_updates, 1):>10.4f}"),
             srow(" -> WMP",
@@ -715,6 +720,7 @@ class PerformanceTracker:
             srow("Wrong majorant mean error",          self.pct(self.wrong_majorant_mean_error)),
             srow(" -> WMP wrong majorant mean error",  self.pct(self.wrong_majorant_mean_error_wmp)),
             srow(" -> ENDF wrong majorant mean error", self.pct(self.wrong_majorant_mean_error_endf)),
+
             "=" * W,
         ]
         return "\n".join(lines)
