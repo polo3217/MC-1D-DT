@@ -113,6 +113,9 @@ class Material:
             if not(nuclide_name in nuclide_objects):
                 endf_entry = lib.get_by_material(nuclide_name, data_type='neutron')
                 wmp_entry  = lib.get_by_material(nuclide_name, data_type='wmp')
+                wmp_nuclide = openmc.data.WindowedMultipole.from_hdf5(wmp_entry['path']) if wmp_entry else None
+                E_max = wmp_nuclide.E_max if wmp_nuclide else None
+                
                 endf_obj = openmc.data.IncidentNeutron.from_hdf5(endf_entry['path']) if endf_entry else None
                 if endf_obj is not None:
                     endf_dict = {}
@@ -120,8 +123,10 @@ class Material:
                         endf_dict[mt] = {}
                         for t in endf_obj.temperatures:
                             try :
+                                
                                 xs_data = endf_obj[mt].xs[t]
-                                endf_dict[mt][t] = Tabulated1D(xs_data.x, xs_data.y)
+                                mask = xs_data.x >= E_max if E_max is not None else np.array([True]*len(xs_data.x))
+                                endf_dict[mt][t] = Tabulated1D(xs_data.x[mask], xs_data.y[mask])
                                 endf_dict[mt]['reaction'] = reaction
                             except KeyError:
                                 print(f"[Material] Warning: MT={mt} not found for nuclide '{nuclide_name}' at temperature {t}. Skipping this reaction.")
@@ -379,8 +384,9 @@ class Geometry:
         if value == "validation":
             if filename is None: raise ValueError("filename required for validation")
             self._mode = value
-            self.set_maj_xs_method("group")
-            self.maj_method = "simple"
+            # Call internal methods directly to avoid double start/stop of preprocessing timer
+            self._maj_xs_method = "group"
+            self._maj_mat_method = "simple"
             self.df_group_xs = group_xs.get_group_xs(filename, verbose=self.verbose)
         else:
             self._mode = value
@@ -1097,7 +1103,7 @@ class Geometry:
             A = nuclide_objects[nuclide_name]['wmp'].sqrtAWR ** 2 
 
         elif self.mode == "validation":
-            A = n.material.nuclides[0][0].sqrtAWR ** 2
+            A = nuclide_objects[n.material.nuclides[0][0]]['wmp'].sqrtAWR
 
         mu_cm = 2.0 * random.random() - 1.0
         phi   = 2.0 * math.pi * random.random()
