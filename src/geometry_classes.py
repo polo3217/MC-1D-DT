@@ -814,7 +814,7 @@ class Geometry:
             for t in temps_endf:
                 xs = nuclide[mt_total][f'{t:.0f}K'](energy)  # correct OpenMC API
                 if xs > maj_xs: maj_xs = xs
-            return maj_xs
+            return maj_xs*(1.05)
 
         nuclide = nuclide_objects[nuclide_name]['wmp']
 
