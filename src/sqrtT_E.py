@@ -333,7 +333,7 @@ def evaluate_majorant_cross_section(multipole_data, E, data_table, T_range :Opti
                 evaluate_curve_fit_contribution(multipole_data=multipole_data, E=E, T=T_range[0])
             )
         
-        return maj_xs
+        return maj_xs*(1+safety_factor) # add a safety factor to ensure that the majorant is indeed a majorant
 
 
 
