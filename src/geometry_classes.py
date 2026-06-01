@@ -183,7 +183,7 @@ class Material:
 
 
     def _xs_evaluation(self, energy: float, temperature:Optional[float] = None) -> np.ndarray:
-        """Return [total, absorption, fission] in cm⁻¹."""
+        """Retrun macroscopic cross sections [total, absorption, fission] in cm⁻¹."""
         xs_total = np.zeros(3)
 
         for nuclide_name, density in self.nuclides:
@@ -791,6 +791,7 @@ class Geometry:
         
     
     def _nuclide_xs_evaluation(self, nuclide_name: str, energy: float, temperature: float) -> np.ndarray:
+        "Return microscopic xs (scattering, absorption, fission) for given nuclide, energy, and temperature.  Uses WMP if in range, otherwise ENDF."
         ## only for analysis mode, validation mode uses pre-tabulated group xs
         if self.mode != "analysis":
             raise RuntimeError("_nuclide_xs_evaluation is only for analysis mode")
@@ -911,6 +912,12 @@ class Geometry:
             return xs1 + (xs2 - xs1) * (energy - E1) / (E2 - E1)
 
     def get_majorant_xs(self, energy: float) -> float:
+
+        in_wmp_range = any(
+                    nuclide_objects[name]['wmp'] is not None
+                    and nuclide_objects[name]['wmp'].E_min <= energy <= nuclide_objects[name]['wmp'].E_max
+                    for name, _ in self._nuclides.values()
+                )
         if self.perf_tracker_flag:
             wall_t0 = time.perf_counter()
             cpu_t0  = time.process_time()
@@ -947,11 +954,7 @@ class Geometry:
                 self.perf.cpu_time_majorant_wmp  += cpu_dt
             else:
                 # fly mode: attribute based on whether energy is in WMP window
-                in_wmp_range = any(
-                    nuclide_objects[name]['wmp'] is not None
-                    and nuclide_objects[name]['wmp'].E_min <= energy <= nuclide_objects[name]['wmp'].E_max
-                    for name, _ in self._nuclides.values()
-                )
+                
                 if in_wmp_range:
                     self.perf.n_majorant_updates_wmp  += 1
                     self.perf.time_majorant_wmp       += wall_dt
@@ -1001,32 +1004,25 @@ class Geometry:
         
         if self.mode == "analysis":
 
-            # CHANGE: compute in_wmp_range once, outside the cache-hit branch,
-            # so it is always defined when the wrong-majorant block below
-            # references it — previously it was only set inside the else branch,
-            # causing a NameError on cache hits.
             in_wmp_range = any(
                 nuclide_objects[name]['wmp'] is not None
                 and nuclide_objects[name]['wmp'].E_min <= n.energy <= nuclide_objects[name]['wmp'].E_max
                 for name, _ in mat.nuclides
             )
 
-            if n.energy == n.last_eval_energy and mat == n.last_eval_mat:
-                n.xs = n.last_eval_xs
-            else:
+            
+
+            if not(n.energy == n.last_eval_energy and mat == n.last_eval_mat):
+                
                 wall_t0 = time.perf_counter()
                 cpu_t0  = time.process_time()
                 n.xs = mat._xs_evaluation(n.energy)
                 n.last_eval_energy = n.energy
                 n.last_eval_mat = mat
-                n.last_eval_xs = n.xs
+                
                 wall_dt = time.perf_counter() - wall_t0
                 cpu_dt  = time.process_time()  - cpu_t0
-                # CHANGE: in_wmp_range already computed above — no need to
-                # recompute here. Attribution is correct for both fly and reconr:
-                # for reconr the XS evaluation still goes through _xs_evaluation
-                # which uses WMP or ENDF depending on energy, so energy-range
-                # attribution is correct for the local XS timer.
+
                 if in_wmp_range:
                     self.perf.time_xs_eval_wmp     += wall_dt
                     self.perf.cpu_time_xs_eval_wmp += cpu_dt
@@ -1366,8 +1362,31 @@ class Geometry:
                 local_xs   = 0.0
                 mat_name   = ""
                 if mat_at_pos is not None:
+
+                    in_wmp_range = any(
+                            nuclide_objects[name]['wmp'] is not None
+                            and nuclide_objects[name]['wmp'].E_min <= n.energy <= nuclide_objects[name]['wmp'].E_max
+                            for name, _ in mat_at_pos.nuclides
+                        ) 
                     if self.mode == "analysis":
+                        wall_t0 = time.perf_counter()
+                        cpu_t0  = time.process_time()
                         xs_arr = mat_at_pos._xs_evaluation(n.energy)
+
+                        wall_dt = time.perf_counter() - wall_t0
+                        cpu_dt  = time.process_time()  - cpu_t0
+
+                        
+                        if in_wmp_range:
+                            self.perf.time_xs_eval_wmp     += wall_dt
+                            self.perf.cpu_time_xs_eval_wmp += cpu_dt
+                            self.perf.n_xs_evaluations_wmp += 1
+                        else:
+                            self.perf.time_xs_eval_endf     += wall_dt
+                            self.perf.cpu_time_xs_eval_endf += cpu_dt
+                            self.perf.n_xs_evaluations_endf += 1
+
+                        
                     elif self.mode == "validation":
                         m_id = 15 if mat_at_pos.name == "cell 1" else 16
                         xs_scatter = self.df_group_xs[(self.df_group_xs['cell'] == m_id)]['scatter'].sum()

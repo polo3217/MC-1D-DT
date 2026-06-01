@@ -29,7 +29,7 @@ class Neutron:
         # These store the state of the last expensive cross-section evaluation
         self.last_eval_energy = -1.0
         self.last_eval_mat    = None
-        self.last_eval_xs     = None
+        
 
         # [MODIFIED] Optimization 2 & 3: Tally caching variables
         # Stores the current index to avoid O(log N) lookups on every step
