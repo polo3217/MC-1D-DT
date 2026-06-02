@@ -291,7 +291,6 @@ def build_majorant_xs_grid(
     last_window: int   | None = None,
     last_energy: float | None = None,
     n_workers:   int   | None = None,
-    E_max:       float | None = None,
 ) -> Tuple[List[float], List[float], float, float, List[int], Dict]:
     """
     Parallelised drop-in replacement for the serial build_majorant_xs_grid.

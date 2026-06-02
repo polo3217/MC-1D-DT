@@ -41,6 +41,7 @@ import time
 import pickle
 from multiprocessing import Pool
 import psutil
+import tracemalloc as _tm
 
 # BatchTimer comes from the corrected performance_classes.py.
 from src.performance_classes import BatchTimer
@@ -95,6 +96,11 @@ def _run_single_batch_worker(args):
             verif       : dict (optional)    — VerificationTally.snapshot()
     """
     geom_pickle, src, track_neutron, batch_idx = args
+    # Peek at _tracemalloc_enabled before full deserialisation is
+    # impossible without full load — just load, then conditionally start.
+    geom = pickle.loads(geom_pickle)
+    if getattr(geom.perf, '_tracemalloc_enabled', False) and not _tm.is_tracing():
+        _tm.start(5)   # depth 5 matches enable_tracemalloc() default
 
     # ── 1. Reconstitute the geometry inside the worker process ──────────────
     # Each worker gets its own *deep copy* of the geometry. Tallies and
@@ -119,6 +125,7 @@ def _run_single_batch_worker(args):
     # `from_batch=True` tells run_source not to start/stop its own memory
     # tracker (the parent process is in charge of memory bookkeeping).
     geom.run_source(batch_src, track_neutron=track_neutron, from_batch=True)
+    
 
     # ── 5. Capture worker peak RSS for memory diagnostics ───────────────────
     # We ONLY have a single-point measurement here, not a true peak,
@@ -138,6 +145,8 @@ def _run_single_batch_worker(args):
         "perf"      : geom.perf.snapshot(),
         "peak_mb"   : peak_mb,
     }
+    
+    snap["energy_bins"] = geom.perf.bins_to_snapshot()
 
     # Optional sub-tallies (only present if attached to this geometry)
     if geom.flux_tally_flag and geom.flux_tally is not None:
@@ -424,6 +433,11 @@ def run_batch(self,
             # returns out of order this still produces deterministic
             # results indexed by batch number.
             self.batch_results.sort(key=lambda r: r["batch"])
+            if self.perf.bins:
+                self.perf.merge_bins(
+                    [r["energy_bins"] for r in self.batch_results
+                        if "energy_bins" in r]
+                )
 
             # Collate worker-reported peak memory into the parent's
             # memory tracker so the summary covers all processes.

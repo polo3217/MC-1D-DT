@@ -19,6 +19,7 @@ import random
 import bisect
 from multiprocessing import Pool
 import functools
+import psutil
 
 sys.path.append('/home/paule/open_mc_projects/MC-1D_DT/structured_code/src')
 
@@ -59,6 +60,7 @@ global xs_dir_sqrtT_E
 global xs_dir_vectfit
 global nuclide_objects
 global temps_endf
+global nuclide_wmp
 
 
 #load valid nuclides from the hdf5 files generated in valid_nuclides.ipynb
@@ -73,6 +75,7 @@ xml_path = '/home/paule/open_mc_projects/xs_lib/endfb-vii.1-hdf5/cross_sections.
 lib = openmc.data.DataLibrary.from_xml(xml_path)
 
 nuclide_objects = {}
+nuclide_wmp = {}
 # Build the sorted list of ENDF temperatures available in the library.
 # Done once at module load — all nuclides in ENDF/B-VII.1 share the same
 # temperature grid, so we read it from the first available neutron entry.
@@ -110,39 +113,7 @@ class Material:
             """
             # CHANGE : we will only store the name, the nuclide object are saved as global variables to save memory since they can be shared among materials
             # check if the nuclide is already in nuclide_obj
-            if not(nuclide_name in nuclide_objects):
-                endf_entry = lib.get_by_material(nuclide_name, data_type='neutron')
-                wmp_entry  = lib.get_by_material(nuclide_name, data_type='wmp')
-                wmp_nuclide = openmc.data.WindowedMultipole.from_hdf5(wmp_entry['path']) if wmp_entry else None
-                E_max = wmp_nuclide.E_max if wmp_nuclide else None
-                
-                endf_obj = openmc.data.IncidentNeutron.from_hdf5(endf_entry['path']) if endf_entry else None
-                if endf_obj is not None:
-                    endf_dict = {}
-                    for mt, reaction in [(1,'total'), (27,'absorption'), (18,'fission')]:
-                        endf_dict[mt] = {}
-                        for t in endf_obj.temperatures:
-                            try :
-                                
-                                xs_data = endf_obj[mt].xs[t]
-                                mask = xs_data.x >= E_max if E_max is not None else np.array([True]*len(xs_data.x))
-                                endf_dict[mt][t] = Tabulated1D(xs_data.x[mask], xs_data.y[mask])
-                                endf_dict[mt]['reaction'] = reaction
-                            except KeyError:
-                                print(f"[Material] Warning: MT={mt} not found for nuclide '{nuclide_name}' at temperature {t}. Skipping this reaction.")
-                                xs_data = None
-                                endf_dict[mt][t] = None
-                                endf_dict[mt]['reaction'] = f'the reaction {reaction} is not available'
-                            
 
-
-                
-
-                nuclide_objects[nuclide_name] = {
-                    'endf': endf_dict if endf_entry else None,
-                    'wmp' : openmc.data.WindowedMultipole.from_hdf5(wmp_entry['path']) if wmp_entry  else None,
-    
-                }
     
         self._T        = T
         self.total_density = float(np.sum([n[1] for n in self.nuclides]))
@@ -411,6 +382,48 @@ class Geometry:
             raise ValueError("Invalid maj_xs_method")
         self._maj_xs_method = method
 
+        for nuclide_name, density in self.nuclides.values():   
+            if not(nuclide_name in nuclide_objects):
+                endf_entry = lib.get_by_material(nuclide_name, data_type='neutron')
+                wmp_entry  = lib.get_by_material(nuclide_name, data_type='wmp')
+                wmp_nuclide = openmc.data.WindowedMultipole.from_hdf5(wmp_entry['path']) if wmp_entry else None
+                E_max = wmp_nuclide.E_max if wmp_nuclide else None
+                
+                endf_obj = openmc.data.IncidentNeutron.from_hdf5(endf_entry['path']) if endf_entry else None
+                if endf_obj is not None:
+                    endf_dict = {}
+                    for mt, reaction in [(1,'total'), (27,'absorption'), (18,'fission')]:
+                        endf_dict[mt] = {}
+                        for t in endf_obj.temperatures:
+                            try :
+                                
+                                xs_data = endf_obj[mt].xs[t]
+                                if method == "endf_lookup":
+                                    mask = np.ones_like(xs_data.x, dtype=bool)  # default to all True
+                                else :
+                                    mask = xs_data.x >= E_max if E_max is not None else np.array([True]*len(xs_data.x))
+                                
+                                endf_dict[mt][t] = Tabulated1D(xs_data.x[mask], xs_data.y[mask])
+                                endf_dict[mt]['reaction'] = reaction
+                            except KeyError:
+                                print(f"[Material] Warning: MT={mt} not found for nuclide '{nuclide_name}' at temperature {t}. Skipping this reaction.")
+                                xs_data = None
+                                endf_dict[mt][t] = None
+                                endf_dict[mt]['reaction'] = f'the reaction {reaction} is not available'
+                            
+
+
+                
+
+                nuclide_objects[nuclide_name] = {
+                    'endf': endf_dict if endf_entry else None,
+                    'wmp' : openmc.data.WindowedMultipole.from_hdf5(wmp_entry['path']) if wmp_entry  else None,
+    
+                }
+                wmp = nuclide_objects[nuclide_name]['wmp']
+                if wmp is not None:
+                    nuclide_wmp[nuclide_name] = (wmp.E_min, wmp.E_max)
+
         if method == "vectfit":
             xs_maj_file_dir = xs_maj_file_dir or xs_dir_vectfit
             print(f"Loading tables from default directory: {xs_maj_file_dir}")
@@ -443,7 +456,10 @@ class Geometry:
                 self.T_min = min(mat.T for mat in self.materials)
                 self.T_max = max(mat.T for mat in self.materials)
             print(f"  [Setup] T Bounds for sqrtT_E set: {self.T_min} K to {self.T_max} K")
-            
+
+        
+        if self.perf_tracker_flag:
+           self.perf.setup_bins(nuclide_wmp=nuclide_wmp)     
         if self.memory_tracker_flag: self.memory.snapshot("maj_xs_method_setup")
         if self.memory_tracker_flag: self.memory.stop()
         if self.perf_tracker_flag: self.perf.stop_preprocessing()
@@ -485,15 +501,6 @@ class Geometry:
                     e_spacing       = e_spacing,
                     window_pointers = window_pointers,
                 )
-
-                # CHANGE: accumulate per-nuclide preprocessing counts into perf.
-                # Each nuclide's grid build is additive — += ensures all nuclides
-                # in the loop are counted, not just the last one.
-                if self.perf_tracker_flag:
-                    self.perf.n_majorant_updates_wmp_pp  += pp_counts["n_wmp"]
-                    self.perf.n_majorant_updates_endf_pp += pp_counts["n_endf"]
-                    self.perf.time_majorant_wmp_pp       += pp_counts["time_wmp"]
-                    self.perf.time_majorant_endf_pp      += pp_counts["time_endf"]
 
             
         if self.memory_tracker_flag: self.memory.snapshot("maj_mat_method_setup")
@@ -539,11 +546,7 @@ class Geometry:
             # build_majorant_xs_grid in this case only interpolates from the
             # already-built nuclide grids — those are not WMP/ENDF evaluations
             # and should not be double-counted.
-            if self.perf_tracker_flag and self._maj_mat_method != "simple_fast":
-                self.perf.n_majorant_updates_wmp_pp  += pp_counts["n_wmp"]
-                self.perf.n_majorant_updates_endf_pp += pp_counts["n_endf"]
-                self.perf.time_majorant_wmp_pp       += pp_counts["time_wmp"]
-                self.perf.time_majorant_endf_pp      += pp_counts["time_endf"]
+
 
             # reset reconr_maj_nuclides to save memory
             if not self.keep_reconr_maj_nuclides:
@@ -552,6 +555,21 @@ class Geometry:
 
         if self.memory_tracker_flag: self.memory.snapshot("access_method_setup")
         if self.memory_tracker_flag: self.memory.stop()
+
+        _proc = psutil.Process(os.getpid())
+        if self.perf.baseline_rss_mb == 0.0:
+            if self.memory_tracker_flag and self.memory is not None:
+                try:
+                    init_snap = self.memory._get("init")
+                    if init_snap is not None:
+                        self.perf.baseline_rss_mb = init_snap.rss_mb
+                except Exception:
+                    pass
+            if self.perf.baseline_rss_mb == 0.0:
+                self.perf.baseline_rss_mb = _proc.memory_info().rss / 1e6
+        self.perf.setup_mem_mb = (
+            _proc.memory_info().rss / 1e6 - self.perf.baseline_rss_mb
+        )
         if self.perf_tracker_flag: self.perf.stop_preprocessing()
 
     @property
@@ -874,7 +892,7 @@ class Geometry:
                     for nuclide_name, density in mat.nuclides:
                         grid = self.reconr_maj_nuclides[nuclide_name]
                         if energy < grid.e_grid[0]: raise ValueError(f"Energy {energy} below grid range for nuclide {nuclide_name}")
-                        if energy > grid.e_grid[-1]: raise ValueError(f"Energy {energy} above grid range for nuclide {nuclide_name}")
+                        
 
                         if energy <= grid.e_grid[0]:
                             nuclide_majorant_xs = grid.xs_grid[0]
@@ -888,6 +906,11 @@ class Geometry:
                             E1, E2 = grid.e_grid[i - 1], grid.e_grid[i]
                             xs1, xs2 = grid.xs_grid[i - 1], grid.xs_grid[i]
                             nuclide_majorant_xs = xs1 + (xs2 - xs1) * (energy - E1) / (E2 - E1)
+
+                        if energy > grid.e_grid[-1]: #endf lookup 
+
+                            nuclide_majorant_xs = self.calculate_nuclide_majorant_xs(energy, nuclide_name, mat.T)
+
                         mat_majorant_xs += density * nuclide_majorant_xs
                     if mat_majorant_xs > majorant_xs: 
                         majorant_xs = mat_majorant_xs
@@ -903,6 +926,7 @@ class Geometry:
         elif self.access_method == "reconr":
             if energy <= self.reconr_e_grid[0]: raise ValueError(f"Energy {energy} below grid range for reconr grid")
             if energy >= self.reconr_e_grid[-1]: raise ValueError(f"Energy {energy} above grid range for reconr grid")
+
             w = int((math.sqrt(energy) - self.reconr_sqrt_E_min) / self.reconr_e_spacing)
             lo = self.reconr_window_pointers[w]
             hi = self.reconr_window_pointers[w + 1]
@@ -910,14 +934,12 @@ class Geometry:
             E1, E2 = self.reconr_e_grid[i - 1], self.reconr_e_grid[i]
             xs1, xs2 = self.reconr_maj_xs_grid[i - 1], self.reconr_maj_xs_grid[i]
             return xs1 + (xs2 - xs1) * (energy - E1) / (E2 - E1)
+        
+
 
     def get_majorant_xs(self, energy: float) -> float:
 
-        in_wmp_range = any(
-                    nuclide_objects[name]['wmp'] is not None
-                    and nuclide_objects[name]['wmp'].E_min <= energy <= nuclide_objects[name]['wmp'].E_max
-                    for name, _ in self._nuclides.values()
-                )
+
         if self.perf_tracker_flag:
             wall_t0 = time.perf_counter()
             cpu_t0  = time.process_time()
@@ -943,26 +965,7 @@ class Geometry:
         if self.perf_tracker_flag:
             wall_dt = time.perf_counter() - wall_t0
             cpu_dt  = time.process_time()  - cpu_t0
-
-            # CHANGE: with access_method='reconr' the lookup is a pure grid
-            # bisect+interpolation — it calls neither WMP nor ENDF at runtime.
-            # Charge time to the wmp bucket (natural "not-ENDF" slot for a
-            # WMP-derived grid) so that time_majorant = wmp + endf is correct.
-            if self.access_method == "reconr":
-                self.perf.n_majorant_updates_wmp += 1
-                self.perf.time_majorant_wmp      += wall_dt
-                self.perf.cpu_time_majorant_wmp  += cpu_dt
-            else:
-                # fly mode: attribute based on whether energy is in WMP window
-                
-                if in_wmp_range:
-                    self.perf.n_majorant_updates_wmp  += 1
-                    self.perf.time_majorant_wmp       += wall_dt
-                    self.perf.cpu_time_majorant_wmp   += cpu_dt
-                else:
-                    self.perf.n_majorant_updates_endf += 1
-                    self.perf.time_majorant_endf      += wall_dt
-                    self.perf.cpu_time_majorant_endf  += cpu_dt
+            self.perf.score_majorant(energy, wall_dt, cpu_dt)
 
         # CHANGE: majorant log eval is now fully outside the perf timer.
         # mat._xs_evaluation() can be expensive (ENDF binary search) and was
@@ -1011,7 +1014,10 @@ class Geometry:
             )
 
             
-
+            # n.xs is set by mat._xs_evaluation() and persists on the neutron
+            # between steps. n.last_eval_xs is intentionally not stored separately —
+            # n.xs itself is the cache. If n.xs is ever reset to None externally,
+            # the cache must also be invalidated by clearing n.last_eval_energy.
             if not(n.energy == n.last_eval_energy and mat == n.last_eval_mat):
                 
                 wall_t0 = time.perf_counter()
@@ -1022,15 +1028,7 @@ class Geometry:
                 
                 wall_dt = time.perf_counter() - wall_t0
                 cpu_dt  = time.process_time()  - cpu_t0
-
-                if in_wmp_range:
-                    self.perf.time_xs_eval_wmp     += wall_dt
-                    self.perf.cpu_time_xs_eval_wmp += cpu_dt
-                    self.perf.n_xs_evaluations_wmp += 1
-                else:
-                    self.perf.time_xs_eval_endf     += wall_dt
-                    self.perf.cpu_time_xs_eval_endf += cpu_dt
-                    self.perf.n_xs_evaluations_endf += 1
+                self.perf.score_xs_eval(n.energy, wall_dt, cpu_dt)
 
             local_xs = float(n.xs[0] + n.xs[1])
             acceptance_prob = local_xs / majorant_xs
@@ -1038,13 +1036,7 @@ class Geometry:
                 self.wrong_majorant_score       += 1
                 self.wrong_majorant_error_score += acceptance_prob - 1.0
                 self.wrong_majorant_energies.append([n.energy, acceptance_prob-1.0])
-                self.perf.wrong_majorant_energies.append([n.energy, acceptance_prob - 1.0])
-                if in_wmp_range:
-                    self.perf.n_wrong_majorant_wmp       += 1
-                    self.perf.n_wrong_majorant_error_wmp += acceptance_prob - 1.0
-                else:
-                    self.perf.n_wrong_majorant_endf       += 1
-                    self.perf.n_wrong_majorant_error_endf += acceptance_prob - 1.0
+                self.perf.score_wrong_majorant(n.energy, acceptance_prob - 1.0)
                 acceptance_prob = 1.0
 
             if random.random() < acceptance_prob:
@@ -1263,15 +1255,7 @@ class Geometry:
             # Evaluate Delta-Tracking Acceptance
             if self._evaluate_acceptance(n, majorant_xs):
                 self.acception_score += 1
-                _in_wmp = n.material is not None and any(
-                    nuclide_objects[name]['wmp'] is not None
-                    and nuclide_objects[name]['wmp'].E_min <= n.energy <= nuclide_objects[name]['wmp'].E_max
-                    for name, _ in n.material.nuclides
-                )
-                if _in_wmp:
-                    self.perf.n_real_collisions_wmp += 1
-                else:
-                    self.perf.n_real_collisions_endf += 1
+                self.perf.score_collision(n.energy, 'real')
 
                 local_xs  = float(n.xs[0] + n.xs[1])
                 mat_name  = n.material.name if n.material else ""
@@ -1344,47 +1328,28 @@ class Geometry:
                 # Virtual collision
                 self.rejection_score += 1
                 _mat_v   = self._get_material_at(n.position[0])
-                _in_wmp_v = _mat_v is not None and any(
-                    nuclide_objects[name]['wmp'] is not None
-                    and nuclide_objects[name]['wmp'].E_min <= n.energy <= nuclide_objects[name]['wmp'].E_max
-                    for name, _ in _mat_v.nuclides
-                )
-                if _in_wmp_v:
-                    self.perf.n_virtual_collisions_wmp += 1
-                else:
-                    self.perf.n_virtual_collisions_endf += 1
+                self.perf.score_collision(n.energy, 'virtual')
+
+
+
 
                 
                 if self.history_flag:
                     hist.n_virtual                 += 1
 
-                mat_at_pos = self._get_material_at(n.position[0])
+                mat_at_pos = _mat_v
                 local_xs   = 0.0
                 mat_name   = ""
                 if mat_at_pos is not None:
 
-                    in_wmp_range = any(
-                            nuclide_objects[name]['wmp'] is not None
-                            and nuclide_objects[name]['wmp'].E_min <= n.energy <= nuclide_objects[name]['wmp'].E_max
-                            for name, _ in mat_at_pos.nuclides
-                        ) 
+
                     if self.mode == "analysis":
-                        wall_t0 = time.perf_counter()
+                        wall_t0 = time.perf_counter()       # START timer
                         cpu_t0  = time.process_time()
-                        xs_arr = mat_at_pos._xs_evaluation(n.energy)
-
-                        wall_dt = time.perf_counter() - wall_t0
+                        xs_arr  = mat_at_pos._xs_evaluation(n.energy)  # actual work
+                        wall_dt = time.perf_counter() - wall_t0        # STOP timer
                         cpu_dt  = time.process_time()  - cpu_t0
-
-                        
-                        if in_wmp_range:
-                            self.perf.time_xs_eval_wmp     += wall_dt
-                            self.perf.cpu_time_xs_eval_wmp += cpu_dt
-                            self.perf.n_xs_evaluations_wmp += 1
-                        else:
-                            self.perf.time_xs_eval_endf     += wall_dt
-                            self.perf.cpu_time_xs_eval_endf += cpu_dt
-                            self.perf.n_xs_evaluations_endf += 1
+                        self.perf.score_xs_eval(n.energy, wall_dt, cpu_dt)  # route to bin
 
                         
                     elif self.mode == "validation":
@@ -1454,6 +1419,18 @@ class Geometry:
                 if track_neutron: tracks.append(result)
 
         self.perf.stop()
+        _proc = psutil.Process(os.getpid())
+        _current_rss = _proc.memory_info().rss / 1e6
+        if self.memory_tracker_flag and self.memory is not None:
+            try:
+                _current_rss = max(_current_rss, self.memory.peak_mb())
+            except Exception:
+                pass
+        self.perf.peak_mem_mb = max(
+            self.perf.peak_mem_mb,
+            _current_rss - self.perf.baseline_rss_mb,
+        )
+
 
         if self.memory_tracker_flag:
             if not from_batch:
@@ -1464,106 +1441,198 @@ class Geometry:
 
     # ------------------------------------------------------------------
     def _compute_batch_stats(self) -> dict:
-        B = len(self.batch_results)
-        stats = {"n_batches": B}
+            B = len(self.batch_results)
+            stats = {"n_batches": B}
 
-        if "flux" in self.batch_results[0]:
-            flux_means = np.array([r["flux"]["flux"]["mean"] for r in self.batch_results])
-            cross_mean = flux_means.mean(axis=0)
-            cross_std  = flux_means.std(axis=0, ddof=1) / np.sqrt(B)
-            with np.errstate(divide="ignore", invalid="ignore"):
-                re = np.where(cross_mean != 0.0, cross_std / np.abs(cross_mean), np.inf)
-            stats["flux"] = {
-                "energy_bins"   : self.batch_results[0]["flux"]["energy_bins"],
-                "mean"          : cross_mean.tolist(),
-                "std"           : cross_std.tolist(),
-                "relative_error": re.tolist(),
-            }
-
-        if "verif" in self.batch_results[0]:
-            verif_stats = {}
-            for key in ("absorption", "scatter"):
-                arr = np.array([r["verif"][key]["mean"] for r in self.batch_results])
-                cm  = arr.mean(axis=0)
-                cs  = arr.std(axis=0, ddof=1) / np.sqrt(B)
+            if "flux" in self.batch_results[0]:
+                flux_means = np.array([r["flux"]["flux"]["mean"] for r in self.batch_results])
+                cross_mean = flux_means.mean(axis=0)
+                cross_std  = flux_means.std(axis=0, ddof=1) / np.sqrt(B)
                 with np.errstate(divide="ignore", invalid="ignore"):
-                    re = np.where(cm != 0.0, cs / np.abs(cm), np.inf)
-                verif_stats[key] = {"mean": cm.tolist(), "std": cs.tolist(), "relative_error": re.tolist()}
-
-            for key in ("current_fwd", "current_bwd"):
-                arr = np.array([r["verif"][key]["mean"] for r in self.batch_results])
-                cm  = arr.mean(axis=0)
-                cs  = arr.std(axis=0, ddof=1) / np.sqrt(B)
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    re = np.where(cm != 0.0, cs / np.abs(cm), np.inf)
-                verif_stats[key] = {"mean": cm.tolist(), "std": cs.tolist(), "relative_error": re.tolist()}
-
-            for key in ("leak_left", "leak_right"):
-                vals = np.array([r["verif"][key]["mean"] for r in self.batch_results])
-                cm   = float(vals.mean())
-                cs   = float(vals.std(ddof=1) / np.sqrt(B))
-                re   = cs / abs(cm) if cm != 0.0 else float("inf")
-                verif_stats[key] = {"mean": cm, "std": cs, "relative_error": re}
-
-            verif_stats["energy_bins"] = self.batch_results[0]["verif"]["energy_bins"]
-            verif_stats["surface_xs"]  = self.batch_results[0]["verif"]["surface_xs"]
-            verif_stats["boundaries"]  = self.batch_results[0]["verif"]["boundaries"]
-            stats["verif"] = verif_stats
-
-        # ── performance ───────────────────────────────────────────────────────
-        # Float keys: compute mean ± std across batches
-        perf_float_keys = [
-            "total_time_s",          "total_cpu_time_s",
-            "time_preprocessing_s",  "cpu_time_preprocessing_s",
-            "time_run_source_s",     "cpu_time_run_source_s",
-            "time_total_s",          "cpu_time_total_s",
-            "time_majorant_s",       "cpu_time_majorant_s",
-            "time_xs_eval_s",        "cpu_time_xs_eval_s",
-            "neutrons_per_second",   "rejection_fraction",
-            "cpu_efficiency",
-            "n_majorant_updates", "n_xs_evaluations",
-        ]
-        perf_stats = {}
-        for k in perf_float_keys:
-            vals = np.array([r["perf"][k] for r in self.batch_results
-                             if k in r["perf"]])
-            if len(vals) == 0:
-                perf_stats[k] = {"mean": float("nan"), "std": float("nan")}
-            else:
-                perf_stats[k] = {
-                    "mean": float(vals.mean()),
-                    "std":  float(vals.std(ddof=1)),
+                    re = np.where(cross_mean != 0.0, cross_std / np.abs(cross_mean), np.inf)
+                stats["flux"] = {
+                    "energy_bins"   : self.batch_results[0]["flux"]["energy_bins"],
+                    "mean"          : cross_mean.tolist(),
+                    "std"           : cross_std.tolist(),
+                    "relative_error": re.tolist(),
                 }
 
-        # Integer keys: sum across all batches
-        for k in ("n_neutrons", "n_real_collisions", "n_virtual_collisions",
-                  "n_majorant_updates", "n_xs_evaluations"):
-            perf_stats[k] = int(sum(r["perf"].get(k, 0) for r in self.batch_results))
+            if "verif" in self.batch_results[0]:
+                verif_stats = {}
+                for key in ("absorption", "scatter"):
+                    arr = np.array([r["verif"][key]["mean"] for r in self.batch_results])
+                    cm  = arr.mean(axis=0)
+                    cs  = arr.std(axis=0, ddof=1) / np.sqrt(B)
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        re = np.where(cm != 0.0, cs / np.abs(cm), np.inf)
+                    verif_stats[key] = {"mean": cm.tolist(), "std": cs.tolist(),
+                                        "relative_error": re.tolist()}
 
-        
+                for key in ("current_fwd", "current_bwd"):
+                    arr = np.array([r["verif"][key]["mean"] for r in self.batch_results])
+                    cm  = arr.mean(axis=0)
+                    cs  = arr.std(axis=0, ddof=1) / np.sqrt(B)
+                    with np.errstate(divide="ignore", invalid="ignore"):
+                        re = np.where(cm != 0.0, cs / np.abs(cm), np.inf)
+                    verif_stats[key] = {"mean": cm.tolist(), "std": cs.tolist(),
+                                        "relative_error": re.tolist()}
 
-        # Wrong majorant: mean ± std + min/max + total count
-        for k in ("wrong_majorant_fraction", "wrong_majorant_mean_error"):
-            vals = np.array([r["perf"][k] for r in self.batch_results])
-            perf_stats[k] = {
-                "mean": float(vals.mean()),
-                "std":  float(vals.std(ddof=1)),
-                "min":  float(vals.min()),
-                "max":  float(vals.max()),
-            }
-        perf_stats["n_wrong_majorant"] = int(
-            sum(r["perf"]["n_wrong_majorant"] for r in self.batch_results)
-        )
+                for key in ("leak_left", "leak_right"):
+                    vals = np.array([r["verif"][key]["mean"] for r in self.batch_results])
+                    cm   = float(vals.mean())
+                    cs   = float(vals.std(ddof=1) / np.sqrt(B))
+                    re   = cs / abs(cm) if cm != 0.0 else float("inf")
+                    verif_stats[key] = {"mean": cm, "std": cs, "relative_error": re}
 
-        perf_stats["wrong_majorant_energies"] = []
+                verif_stats["energy_bins"] = self.batch_results[0]["verif"]["energy_bins"]
+                verif_stats["surface_xs"]  = self.batch_results[0]["verif"]["surface_xs"]
+                verif_stats["boundaries"]  = self.batch_results[0]["verif"]["boundaries"]
+                stats["verif"] = verif_stats
 
-        for r in self.batch_results:
-            if "wrong_majorant_energies" in r["perf"]:
-                perf_stats["wrong_majorant_energies"].extend(r["perf"]["wrong_majorant_energies"])
-        
+            # ── performance ───────────────────────────────────────────────────────
+            # Float keys: mean ± std across batches.
+            # NOTE: n_majorant_updates and n_xs_evaluations are intentionally
+            # NOT here — they are integers summed below.  Having them in both
+            # loops would cause the integer sum to silently overwrite the dict.
+            perf_float_keys = [
+                "total_time_s",          "total_cpu_time_s",
+                "time_preprocessing_s",  "cpu_time_preprocessing_s",
+                "time_run_source_s",     "cpu_time_run_source_s",
+                "time_total_s",          "cpu_time_total_s",
+                "time_majorant_s",       "cpu_time_majorant_s",
+                "time_xs_eval_s",        "cpu_time_xs_eval_s",
+                "neutrons_per_second",   "rejection_fraction",
+                "cpu_efficiency",
+                "us_per_majorant_s",     "us_per_xs_eval_s",
+                "baseline_rss_mb",       "setup_mem_mb",       "peak_mem_mb",
+                "python_heap_setup_kb",  "python_heap_transport_kb",
+            ]
+            perf_stats = {}
+            for k in perf_float_keys:
+                vals = np.array([r["perf"][k] for r in self.batch_results
+                                if k in r["perf"]])
+                if len(vals) == 0:
+                    perf_stats[k] = {"mean": float("nan"), "std": float("nan")}
+                else:
+                    perf_stats[k] = {
+                        "mean": float(vals.mean()),
+                        "std":  float(vals.std(ddof=1)),
+                    }
 
-        stats["perf"] = perf_stats
-        return stats
+            # Integer keys: summed across batches
+            for k in ("n_neutrons", "n_real_collisions", "n_virtual_collisions",
+                    "n_majorant_updates", "n_xs_evaluations"):
+                perf_stats[k] = int(sum(r["perf"].get(k, 0) for r in self.batch_results))
+
+            # Wrong majorant totals + distribution
+            for k in ("wrong_majorant_fraction", "wrong_majorant_mean_error"):
+                vals = np.array([r["perf"][k] for r in self.batch_results
+                                if not math.isnan(float(r["perf"].get(k, float("nan"))))])
+                if len(vals) == 0:
+                    perf_stats[k] = {"mean": float("nan"), "std": float("nan"),
+                                    "min":  float("nan"), "max": float("nan")}
+                else:
+                    perf_stats[k] = {
+                        "mean": float(vals.mean()),
+                        "std":  float(vals.std(ddof=1) if len(vals) > 1 else 0.0),
+                        "min":  float(vals.min()),
+                        "max":  float(vals.max()),
+                    }
+            perf_stats["n_wrong_majorant"] = int(
+                sum(r["perf"].get("n_wrong_majorant", 0) for r in self.batch_results)
+            )
+            perf_stats["wrong_majorant_energies"] = []
+            for r in self.batch_results:
+                perf_stats["wrong_majorant_energies"].extend(
+                    r["perf"].get("wrong_majorant_energies", [])
+                )
+
+            # ── energy-bin aggregation ────────────────────────────────────────────
+            # Each batch snapshot contains "energy_bins": a list of per-bin dicts.
+            # We compute mean ± std across batches for every numeric field in each
+            # bin, and copy the static fields (boundaries, labels, nuclide lists)
+            # from the first batch unchanged.
+            first_bins = self.batch_results[0]["perf"].get("energy_bins", [])
+            if first_bins:
+                n_bins    = len(first_bins)
+                bin_stats = []
+
+                # Numeric fields to aggregate (derived fractions are re-derived
+                # after aggregation rather than averaged to avoid NaN propagation)
+                numeric_keys = (
+                    "time_majorant_s",    "cpu_time_majorant_s",  "n_majorant_updates",
+                    "time_xs_eval_s",     "cpu_time_xs_eval_s",   "n_xs_evaluations",
+                    "n_real_collisions",  "n_virtual_collisions",
+                    "n_wrong_majorant",   "wrong_majorant_error",
+                )
+
+                for bi in range(n_bins):
+                    # Collect this bin's dict from every batch that has it
+                    bin_dicts = [
+                        r["perf"]["energy_bins"][bi]
+                        for r in self.batch_results
+                        if bi < len(r["perf"].get("energy_bins", []))
+                    ]
+                    if not bin_dicts:
+                        continue
+
+                    agg = {}
+
+                    # Static fields — identical across batches
+                    for k in ("e_lo", "e_hi", "label",
+                            "nuclides_wmp", "nuclides_endf"):
+                        agg[k] = bin_dicts[0][k]
+
+                    # Numeric fields: mean ± std
+                    for k in numeric_keys:
+                        raw = [d[k] for d in bin_dicts if k in d]
+                        if not raw:
+                            agg[k] = {"mean": float("nan"), "std": float("nan")}
+                            continue
+                        vals = np.array(raw, dtype=float)
+                        agg[k] = {
+                            "mean": float(vals.mean()),
+                            "std":  float(vals.std(ddof=1) if len(vals) > 1 else 0.0),
+                        }
+
+                    # Re-derive per-bin fractions from the mean counts so that
+                    # bins with zero events don't produce NaN averages
+                    def _safe_div(num_key, den_key):
+                        n = agg[num_key]["mean"]
+                        d = agg[den_key]["mean"]
+                        return n / d if d > 0 else float("nan")
+
+                    total_coll = (agg["n_real_collisions"]["mean"]
+                                + agg["n_virtual_collisions"]["mean"])
+                    agg["rejection_fraction"] = (
+                        agg["n_virtual_collisions"]["mean"] / total_coll
+                        if total_coll > 0 else float("nan")
+                    )
+                    agg["wrong_majorant_fraction"] = _safe_div(
+                        "n_wrong_majorant", "n_majorant_updates"
+                    )
+                    agg["wrong_majorant_mean_error"] = _safe_div(
+                        "wrong_majorant_error", "n_wrong_majorant"
+                    )
+                    agg["us_per_majorant"] = (
+                        1e6 * agg["time_majorant_s"]["mean"]
+                        / agg["n_majorant_updates"]["mean"]
+                        if agg["n_majorant_updates"]["mean"] > 0
+                        else float("nan")
+                    )
+                    agg["us_per_xs_eval"] = (
+                        1e6 * agg["time_xs_eval_s"]["mean"]
+                        / agg["n_xs_evaluations"]["mean"]
+                        if agg["n_xs_evaluations"]["mean"] > 0
+                        else float("nan")
+                    )
+
+                    bin_stats.append(agg)
+
+                perf_stats["energy_bins"] = bin_stats
+
+            stats["perf"] = perf_stats
+            return stats
 
     # ------------------------------------------------------------------
     def summary(self) -> str:
