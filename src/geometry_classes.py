@@ -1321,6 +1321,17 @@ class Geometry:
                     if self.flux_tally_flag and self.flux_tally is not None:
                         n.current_energy_bin = self.flux_tally._energy_bin(n.energy)
 
+                    # NEW: terminate below cutoff before the next majorant lookup
+                    if n.energy < self.cutoff_energy:
+                        self.absorption_score += 1
+                        if self.history_flag:
+                            hist.fate = "absorption"
+                        if self.verif_tally_flag and self.verif_tally is not None:
+                            self.verif_tally.score_collision(n.position[0], n.energy, 'absorption')
+                        if self.flux_tally_flag and self.flux_tally is not None and n.current_energy_bin >= 0:
+                            self.flux_tally._flux_tally.score(n.current_energy_bin, n.accumulated_distance)
+                        break
+
                     majorant_xs = self.get_majorant_xs(n.energy)
                     distance = self._sample_neutron_distance(majorant_xs)
 
