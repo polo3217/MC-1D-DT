@@ -234,15 +234,14 @@ class MemoryTracker:
                                          name="MemoryPoller")
         self._thread.start()
         self.snapshot("init")
-        print(f"\n [Memory] Tracker started (poll interval: "
-              f"{self._poll_interval*1000:.0f} ms)")
+        #print(f"\n [Memory] Tracker started (poll interval: "f"{self._poll_interval*1000:.0f} ms)")
 
     def stop(self):
         self._polling = False
         if self._thread is not None:
             self._thread.join(timeout=2.0)
         self.snapshot("stop")
-        print(f"\n [Memory] Tracker stopped.")
+        #print(f"\n [Memory] Tracker stopped.")
 
     def _poll_loop(self):
         # CHANGE: Option 2 - Threshold variables to prevent logging redundant data points
@@ -641,6 +640,13 @@ class PerformanceTracker:
             for frame in stat.traceback:
                 lines.append(f"    {frame.filename}:{frame.lineno}")
         return "\n".join(lines)
+
+    def current_heap_kb(self) -> float:
+        """Total Python-heap bytes alive right now, in kB. 0 if tracemalloc off."""
+        if not tracemalloc.is_tracing():
+            return 0.0
+        current, _peak = tracemalloc.get_traced_memory()
+        return current / 1024
 
     # ─────────────────────────────────────────────────────────────────────────
     # PREPROCESSING TIMER

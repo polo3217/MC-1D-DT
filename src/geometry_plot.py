@@ -253,7 +253,7 @@ def draw(
             height_ratios=height_ratios,
             width_ratios=width_ratios,
             hspace=0.06,
-            wspace=0.03,
+            wspace=0.2,
         )
 
         ax_mat_new  = fig.add_subplot(gs[n_rows - 1, 0])

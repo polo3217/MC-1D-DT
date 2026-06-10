@@ -388,6 +388,7 @@ class Geometry:
                 wmp_entry  = lib.get_by_material(nuclide_name, data_type='wmp')
                 wmp_nuclide = openmc.data.WindowedMultipole.from_hdf5(wmp_entry['path']) if wmp_entry else None
                 E_max = wmp_nuclide.E_max if wmp_nuclide else None
+                E_min = wmp_nuclide.E_min if wmp_nuclide else None
                 
                 endf_obj = openmc.data.IncidentNeutron.from_hdf5(endf_entry['path']) if endf_entry else None
                 if endf_obj is not None:
@@ -396,11 +397,12 @@ class Geometry:
                         endf_dict[mt] = {}
                         for t in endf_obj.temperatures:
                             try :
+                                
                                 xs_data = endf_obj[mt].xs[t]
                                 if method == "endf_lookup":
                                     mask = np.ones_like(xs_data.x, dtype=bool)  # default to all True
                                 else :
-                                    mask = xs_data.x >= E_max if E_max is not None else np.array([True]*len(xs_data.x))
+                                    mask = (xs_data.x <= E_min) | (xs_data.x >= E_max) if E_max is not None and E_min is not None else np.ones_like(xs_data.x, dtype=bool)
                                 
                                 endf_dict[mt][t] = Tabulated1D(xs_data.x[mask], xs_data.y[mask])
                                 endf_dict[mt]['reaction'] = reaction
@@ -547,7 +549,20 @@ class Geometry:
             # and should not be double-counted.
 
             self.xs_maj_tables = {}
-            
+            for nuclide_name in nuclide_objects.keys(): 
+                #reduce the energy grid to E_max for each endf file (reduce memory)
+                endf = nuclide_objects[nuclide_name]['endf']
+                if endf is not None:
+                    for mt in [1, 27, 18]:
+                        if endf[mt] is not None:
+                            for t in endf[mt].keys():
+                                if t != 'reaction' and endf[mt][t] is not None:
+                                    E_max = nuclide_wmp.get(nuclide_name, (None, None))[1]
+                                    mask = endf[mt][t].x >= E_max if E_max is not None else np.array([True]*len(endf[mt][t].x))
+                                    endf[mt][t] = Tabulated1D(endf[mt][t].x[mask], endf[mt][t].y[mask])
+                                    #print(f"[Setup] Reduced ENDF data for nuclide '{nuclide_name}', MT={mt}, T={t} to E_max={E_max} eV")
+
+                 
             # reset reconr_maj_nuclides to save memory
             if not self.keep_reconr_maj_nuclides:
                 self.reconr_maj_nuclides = {}
@@ -796,7 +811,7 @@ class Geometry:
             xs_hi = endf_obj[mt][f'{t_high:.0f}K'](energy)  # new custom API for ENDF data access
             alpha = (temperature - t_low) / (t_high - t_low)
             return max(0.0, (1 - alpha) * xs_lo + alpha * xs_hi)
-        except (KeyError, TypeError):
+        except KeyError:
             # MT reaction not present for this nuclide (e.g. MT=18 fission for non-fissile)
             return 0.0
 
@@ -859,12 +874,12 @@ class Geometry:
 
         ## SIMPLE ##
         elif self.maj_mat_method == "simple":
-            majorant_xs = 0.0
-            evaluated_majorant_material_nuclides = set() # Optimized: changed to a set
             evaluated_nuclides = {}
+            majorant_xs = 0.0
+            evaluated_majorant_material_nuclides = set() # Optimized: changed to a set for O(1) lookups
             for mat in self.materials:
                 mat_majorant_xs = 0.0
-                mat_nuclides_tuple = tuple(mat.nuclides) # Cast to tuple
+                mat_nuclides_tuple = tuple(mat.nuclides) # Cast to tuple to be hashable in the set
                 
                 if mat_nuclides_tuple in evaluated_majorant_material_nuclides:
                     continue
@@ -873,11 +888,11 @@ class Geometry:
                     for nuclide_name, density in mat.nuclides:
                         if nuclide_name in evaluated_nuclides:
                             nuclide_majorant_xs = evaluated_nuclides[nuclide_name]
-
-                        else :
+                        else:
+                            # Removed mat.T from the evaluation
                             nuclide_majorant_xs = self.calculate_nuclide_majorant_xs(energy, nuclide_name)
                             evaluated_nuclides[nuclide_name] = nuclide_majorant_xs
-
+                            
                         mat_majorant_xs += density * nuclide_majorant_xs
                         
                     if mat_majorant_xs > majorant_xs: 

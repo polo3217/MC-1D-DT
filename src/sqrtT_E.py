@@ -281,7 +281,7 @@ def calculate_majorant_pole_contribution(E,coefficients, T_range, multipole_data
     return maj_contribution
 
 
-def evaluate_majorant_cross_section(multipole_data, E, data_table, T_range :Optional[tuple] = None, safety_factor : Optional[float] = 0.01) :
+def evaluate_majorant_cross_section(multipole_data, E, data_table, T_range :Optional[tuple] = None, safety_factor : Optional[float] = 0.02) :
         """
         Evaluate the majorant cross section at a given energy E and temperature T.
 
@@ -317,15 +317,21 @@ def evaluate_majorant_cross_section(multipole_data, E, data_table, T_range :Opti
         for i_pole in range(startw, endw + 1):
             i_pole = int(i_pole)
             #check if the pole is in the data table
-            if i_pole not in data_table['Pole Index'].values:
-                continue
-            coefficients = data_table.loc[data_table['Pole Index'] == i_pole, 'Coefficients'].values[0]
+        for i_pole in range(startw, endw + 1):
+            i_pole = int(i_pole)
 
-            maj_xs += calculate_majorant_pole_contribution(multipole_data = multipole_data, 
-                                                           E = E, 
-                                                           coefficients = coefficients, 
-                                                           T_range = T_range, 
-                                                           pole_index = i_pole)
+            # packed-table lookup (replaces the old DataFrame mask scan)
+            coefficients = get_pole_coefficients(data_table, i_pole)
+            if coefficients is None:        # pole absent -> skip
+                continue
+
+            maj_xs += calculate_majorant_pole_contribution(
+                multipole_data = multipole_data,
+                E              = E,
+                coefficients   = coefficients,
+                T_range        = T_range,
+                pole_index     = i_pole,
+            )
         
         # Add contribution from the curvefit
         maj_xs += max(
@@ -403,33 +409,92 @@ def broaden_wmp_polynomials(multipole_data, E, dopp, n):
 
 
 ### LOAD TABLES
-
-def parse_coeffs(s):
-
+# Matches each   array([ ... ])   group, capturing the numbers between [ ].
+_ARR_PAT = re.compile(r'array\(\[([^\]]*)\]\)')
+ 
+ 
+def _parse_cell(s):
+    """
+    Parse a stringified 'Coefficients' cell into a list of (2,) float arrays.
+    Empty / NaN -> [].  Direct numeric parse, no ast.literal_eval.
+    """
     if pd.isna(s) or s == "[]":
         return []
-    try:
-        # Replace array(...) with ...
-        cleaned = re.sub(r'array\((.*?)\)', r'\1', s)
-        parsed = ast.literal_eval(cleaned)
-        return [x for x in parsed]
-    except Exception:
-        print("Parse error:", s)
-        return None
-
+    return [np.fromstring(body, sep=',') for body in _ARR_PAT.findall(s)]
+ 
+ 
+def _pack_one(df):
+    """Pack one nuclide's DataFrame into the compact dict described above."""
+    parsed = [_parse_cell(s) for s in df['Coefficients'].values]
+    pole_raw = df['Pole Index'].values.astype(np.int64)
+ 
+    # Sort by pole index so the lookup can use searchsorted.
+    order    = np.argsort(pole_raw)
+    pole_idx = pole_raw[order].astype(np.int32)
+    parsed   = [parsed[i] for i in order]
+ 
+    has   = np.array([len(c) > 0 for c in parsed], dtype=bool)
+    cpos  = np.full(len(parsed), -1, dtype=np.int32)
+ 
+    # Collect the non-empty blocks, each as a (n_pairs, 2) array.
+    blocks = []
+    shapes = set()
+    for k, c in enumerate(parsed):
+        if c:
+            blk = np.stack(c).astype(np.float64)   # (n_pairs, 2)
+            cpos[k] = len(blocks)
+            blocks.append(blk)
+            shapes.add(blk.shape)
+ 
+    if not blocks:
+        coeffs = np.empty((0, 0, 2), dtype=np.float64)
+    elif len(shapes) == 1:
+        # All non-empty poles share one shape -> one rectangular array.
+        coeffs = np.stack(blocks)                  # (n_with, n_pairs, 2)
+    else:
+        # Ragged: different pole pair-counts -> object array of blocks.
+        coeffs = np.empty(len(blocks), dtype=object)
+        for i, b in enumerate(blocks):
+            coeffs[i] = b
+ 
+    return {'pole_idx': pole_idx, 'has': has, 'cpos': cpos, 'coeffs': coeffs}
+ 
+ 
 def xs_majorant_tables(file_dir):
-    tables ={}
-
-    for dir in os.listdir(file_dir):
-        nuclide_name = dir
-        path = os.path.join(file_dir, dir, dir + '.csv')
+    """Load all nuclide majorant tables in packed form."""
+    tables = {}
+    for nuclide_name in os.listdir(file_dir):
+        path = os.path.join(file_dir, nuclide_name, nuclide_name + '.csv')
         try:
-            data_table = pd.read_csv(path)
-            
-            data_table['Coefficients'] = data_table['Coefficients'].apply(parse_coeffs)
-            
+            df = pd.read_csv(path)
+            tables[nuclide_name] = _pack_one(df)
         except Exception as e:
             print(f"Error loading table from {path}: {e}")
-        tables[nuclide_name] = data_table
+            continue
     return tables
+ 
+ 
+def get_pole_coefficients(table, i_pole):
+    """
+    Replicates the old per-pole lookup in evaluate_majorant_cross_section.
+ 
+    Returns
+    -------
+    None
+        pole is ABSENT from the table  -> caller should `continue`
+    [] (empty list)
+        pole present but had no coefficients -> pass straight to
+        calculate_majorant_pole_contribution (it will use the
+        [T_min, T_max] fallback, exactly as before)
+    (n_pairs, 2) float64 ndarray
+        pole present with coefficients; iterating it yields 2-element
+        rows, so `a, b = coeff` works just like the old list of arrays.
+    """
+    pi = table['pole_idx']
+    j  = np.searchsorted(pi, i_pole)
+    if j >= len(pi) or pi[j] != i_pole:
+        return None                      # ABSENT
+    if not table['has'][j]:
+        return []                        # present-but-empty
+    return table['coeffs'][table['cpos'][j]]
         

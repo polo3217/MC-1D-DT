@@ -616,7 +616,7 @@ class VerificationTally:
         n_g  = len(eb) - 1
         n_s  = len(sb) - 1
 
-        e_labels = [f"{eb[i]:.0f}–{eb[i+1]:.0f} eV" for i in range(n_g)]
+        e_labels = [f"{eb[i]:.0f}–{eb[i+1]:.2f} eV" for i in range(n_g)]
         s_labels = [f"{sb[i]:.1f}–{sb[i+1]:.1f} cm" for i in range(n_s)]
 
         def fmt_row(arr, ri):
