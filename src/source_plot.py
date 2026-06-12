@@ -274,86 +274,145 @@ def draw_spatial(
     title:      str | None = None,
     ax:         matplotlib.axes.Axes | None = None,
 ) -> tuple[matplotlib.figure.Figure, matplotlib.axes.Axes]:
-    """
-    Draw a strip showing the normalised source weight per region on the
-    geometry x-axis.  Regions not in the source have zero weight and are
-    drawn in light grey.  The bar height encodes the weight, so non-uniform
-    spatial distributions are immediately visible.
-    """
 
-
-    sr_map    = _norm_weights(source)   # {region_name: norm_weight}
-    sorted_r  = _sorted_regions(geometry)
-    x0        = sorted_r[0].x_min
-    x1        = sorted_r[-1].x_max
-    span      = x1 - x0
+    # ── detect point + monodirectional source ─────────────────────────────────
+    is_point_mono = (
+        hasattr(source, "_point_position") and
+        len(source.source_regions) == 1 and
+        source.source_regions[0].direction_dist == "forward"
+    )
 
     if ax is None:
         fig, ax = plt.subplots(figsize=figsize, facecolor="white")
     else:
         fig = ax.figure
 
+    sorted_r = _sorted_regions(geometry)
+    x0       = sorted_r[0].x_min
+    x1       = sorted_r[-1].x_max
+    span     = x1 - x0
+
     ax.set_facecolor("white")
     ax.set_xlim(x0 - 0.015 * span, x1 + 0.015 * span)
-    ax.set_ylim(0, 1.15)
-    ax.set_yticks([0, 0.5, 1.0])
-    ax.set_yticklabels(["0", "0.5", "1"], fontsize=7)
-    ax.set_ylabel("norm.\nweight", fontsize=8, rotation=0,
-                  labelpad=32, va="center", color="#555555")
     ax.set_xlabel("x  [cm]", fontsize=10)
     for sp in ("top", "right"):
         ax.spines[sp].set_visible(False)
 
-    max_w = max(sr_map.values()) if sr_map else 1.0
+    if is_point_mono:
+        # ── point + monodirectional: draw arrow on geometry ───────────────────
+        sr      = source.source_regions[0]
+        x_src   = float(source._point_position[0])
+        dx      = sr.direction[0]
+        E0      = sr.energy_range[0]
 
-    for r in sorted_r:
-        w       = r.x_max - r.x_min
-        weight  = sr_map.get(r.name, 0.0)
-        h       = weight / max_w   # normalise to [0,1] so tallest bar = 1
+        ax.set_ylim(0, 1.2)
+        ax.set_yticks([])
+        ax.spines["left"].set_visible(False)
 
-        if weight > 0:
-            col   = _SOURCE_COLOUR
-            alpha = 0.75
-            ec    = "#8B5E1A"
-        else:
-            col   = "#DDDDDD"
-            alpha = 0.45
-            ec    = "#AAAAAA"
+        # grey background for all regions
+        for r in sorted_r:
+            rect = mpatches.FancyBboxPatch(
+                (r.x_min, 0.1), r.x_max - r.x_min, 0.6,
+                boxstyle="square,pad=0",
+                facecolor="#EEEEEE", edgecolor="#AAAAAA",
+                linewidth=0.5, alpha=0.5,
+            )
+            ax.add_patch(rect)
 
-        rect = mpatches.FancyBboxPatch(
-            (r.x_min, 0.0), w, max(h, 0.03),
-            boxstyle="square,pad=0",
-            facecolor=col, edgecolor=ec,
-            linewidth=0.3, alpha=alpha,
+        # arrow showing direction
+        arrow_len = 0.12 * span * np.sign(dx)
+        ax.annotate(
+            "",
+            xy    = (x_src + arrow_len, 0.4),
+            xytext= (x_src, 0.4),
+            arrowprops=dict(
+                arrowstyle="-|>",
+                color=_SOURCE_COLOUR,
+                lw=2.0,
+                mutation_scale=18,
+            ),
         )
-        ax.add_patch(rect)
 
-    # weight scale reference line
-    ax.axhline(1.0, color="#AAAAAA", lw=0.6, ls=":", zorder=0)
+        # point marker
+        ax.plot(x_src, 0.4, "o",
+                color=_SOURCE_COLOUR, markersize=9, zorder=5,
+                markeredgecolor="#8B5E1A", markeredgewidth=1.2)
 
-    # legend
-    handles = [
-        mpatches.Patch(facecolor=_SOURCE_COLOUR, edgecolor="#8B5E1A",
-                       alpha=0.75, label="Source region"),
-        mpatches.Patch(facecolor="#DDDDDD", edgecolor="#AAAAAA",
-                       alpha=0.45, label="Non-source region"),
-    ]
-    ax.legend(handles=handles, loc="upper right",
-              fontsize=8, framealpha=0.8, edgecolor="#cccccc")
+        # annotation
+        ax.text(
+            x_src, 0.82,
+            f"x = {x_src:.3f} cm\n"
+            f"E = {E0:.3e} eV\n"
+            f"dir = [{sr.direction[0]:.1f}, {sr.direction[1]:.1f}, {sr.direction[2]:.1f}]",
+            ha="center", va="bottom", fontsize=8,
+            color="#333333",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white",
+                      edgecolor="#cccccc", alpha=0.9),
+        )
 
-    # x ticks
-    bxs   = _boundary_xs(geometry)
-    ticks = _subsample_ticks(bxs, span, max_ticks=20)
-    ax.set_xticks(ticks)
-    ax.xaxis.set_major_formatter(ticker.FormatStrFormatter("%.2f"))
-    ax.tick_params(axis="x", labelsize=7.5, rotation=45, length=3)
+        # boundary ticks
+        bxs   = _boundary_xs(geometry)
+        ticks = _subsample_ticks(bxs, span, max_ticks=20)
+        ax.set_xticks(ticks)
+        ax.xaxis.set_major_formatter(ticker.FormatStrFormatter("%.2f"))
+        ax.tick_params(axis="x", labelsize=7.5, rotation=45, length=3)
 
-    n_source = sum(1 for r in sorted_r if r.name in sr_map)
-    ax.set_title(
-        title or f"Source spatial distribution  —  {n_source} source regions  "
-                 f"/ {len(sorted_r)} total",
-        fontsize=10, pad=6,
-    )
+        ax.set_title(
+            title or "Source spatial distribution  —  point monodirectional",
+            fontsize=10, pad=6,
+        )
+
+    else:
+        # ── original bar chart path ───────────────────────────────────────────
+        sr_map  = _norm_weights(source)
+        max_w   = max(sr_map.values()) if sr_map else 1.0
+
+        ax.set_ylim(0, 1.15)
+        ax.set_yticks([0, 0.5, 1.0])
+        ax.set_yticklabels(["0", "0.5", "1"], fontsize=7)
+        ax.set_ylabel("norm.\nweight", fontsize=8, rotation=0,
+                      labelpad=32, va="center", color="#555555")
+
+        for r in sorted_r:
+            w      = r.x_max - r.x_min
+            weight = sr_map.get(r.name, 0.0)
+            h      = weight / max_w
+
+            col   = _SOURCE_COLOUR if weight > 0 else "#DDDDDD"
+            alpha = 0.75          if weight > 0 else 0.45
+            ec    = "#8B5E1A"     if weight > 0 else "#AAAAAA"
+
+            rect = mpatches.FancyBboxPatch(
+                (r.x_min, 0.0), w, max(h, 0.03),
+                boxstyle="square,pad=0",
+                facecolor=col, edgecolor=ec,
+                linewidth=0.3, alpha=alpha,
+            )
+            ax.add_patch(rect)
+
+        ax.axhline(1.0, color="#AAAAAA", lw=0.6, ls=":", zorder=0)
+
+        handles = [
+            mpatches.Patch(facecolor=_SOURCE_COLOUR, edgecolor="#8B5E1A",
+                           alpha=0.75, label="Source region"),
+            mpatches.Patch(facecolor="#DDDDDD", edgecolor="#AAAAAA",
+                           alpha=0.45, label="Non-source region"),
+        ]
+        ax.legend(handles=handles, loc="upper right",
+                  fontsize=8, framealpha=0.8, edgecolor="#cccccc")
+
+        bxs   = _boundary_xs(geometry)
+        ticks = _subsample_ticks(bxs, span, max_ticks=20)
+        ax.set_xticks(ticks)
+        ax.xaxis.set_major_formatter(ticker.FormatStrFormatter("%.2f"))
+        ax.tick_params(axis="x", labelsize=7.5, rotation=45, length=3)
+
+        n_source = sum(1 for r in sorted_r if r.name in sr_map)
+        ax.set_title(
+            title or f"Source spatial distribution  —  {n_source} source regions  "
+                     f"/ {len(sorted_r)} total",
+            fontsize=10, pad=6,
+        )
 
     try:
         fig.tight_layout()
@@ -445,19 +504,29 @@ def draw_source(
     # ── energy panels ─────────────────────────────────────────────────────────
     draw_energy(source, ax_pdf=ax_pdf, ax_cdf=ax_cdf, show_cdf=True)
 
-    # ── overall title ─────────────────────────────────────────────────────────
+# ── overall title ─────────────────────────────────────────────────────────
     srs   = _get_source_regions(source)
-    dist  = srs[0].energy_dist if srs else "?"
-    E_min, E_max = srs[0].energy_range if srs else (0, 0)
+    sr0   = srs[0] if srs else None
+    dist  = sr0.energy_dist if sr0 else "?"
+    E_min, E_max = sr0.energy_range if sr0 else (0, 0)
+
+    is_point_mono = (
+        hasattr(source, "_point_position") and
+        len(srs) == 1 and
+        sr0.direction_dist == "forward"
+    )
+    src_type = "point monodirectional" if is_point_mono else f"{len(srs)} source regions"
+
     fig.suptitle(
         title or (
             f"Source dashboard  ·  {source.neutron_nbr:,} neutrons  ·  "
-            f"{len(srs)} source regions  ·  {dist}  "
+            f"{src_type}  ·  {dist}  "
             f"[{E_min:.1f}, {E_max:.0f}] eV"
         ),
         fontsize=12, y=1.01,
     )
 
+    
     axes_out = {
         "geometry": ax_geom,
         "spatial":  ax_spatial,

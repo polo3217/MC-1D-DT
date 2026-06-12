@@ -281,7 +281,7 @@ def calculate_majorant_pole_contribution(E,coefficients, T_range, multipole_data
     return maj_contribution
 
 
-def evaluate_majorant_cross_section(multipole_data, E, data_table, T_range :Optional[tuple] = None, safety_factor : Optional[float] = 0.02) :
+def evaluate_majorant_cross_section(multipole_data, E, data_table, T_range :Optional[tuple] = None, safety_factor : Optional[float] = 0.01) :
         """
         Evaluate the majorant cross section at a given energy E and temperature T.
 

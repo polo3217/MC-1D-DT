@@ -226,7 +226,7 @@ def export_cross_batch_stats(batch_stats, geom,
     """
     eb       = np.array(batch_stats["flux"]["energy_bins"])
     n_groups = len(eb) - 1
-    group_labels = [f"{eb[i]:.0f}-{eb[i+1]:.0f} eV" for i in range(n_groups)]
+    group_labels = [f"{eb[i]:.2e}-{eb[i+1]:.2e} eV" for i in range(n_groups)]
 
     flux_mean = _arr(batch_stats, "flux", "mean")
     flux_std  = _arr(batch_stats, "flux", "std")
